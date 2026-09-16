@@ -1,12 +1,28 @@
-# RoomRecord — inspection prototype
+# RoomRecord — AI walkthrough inspection prototype
 
-**Status: experimental, not verified working on an iPhone. LiDAR scanning is not implemented in this Expo Go edition.**
+**Status: experimental. The iPhone camera and AI workflow must be physically tested before use on a live tenancy matter.**
 
-Recovered source for an iPhone rental inspection app. Includes ingoing/outgoing inspections, condition notes, evidence photographs, a continuous whole-level walkthrough video, guided multi-photo room panorama capture, a panorama viewer, local signatures and PDF export. These are implemented code paths, not a claim of successful device testing.
+RoomRecord turns **one continuous walkthrough video** into a **reviewable draft** for an ingoing or outgoing rental inspection. It is not a “record and automatically finalise” system. The app records the video, uploads it to a private analysis endpoint, asks an AI to identify visible spaces and condition evidence, then creates editable room and checklist suggestions with a video timestamp and confidence level.
 
-This is TypeScript/React Native with Expo SDK 57, not Python. The repository name is `floorplanstudio`; the app is RoomRecord. Version 0.3.2 adds a continuous full-level walkthrough recorder and makes the first panorama capture manually startable; it does not complete the original native LiDAR app.
+## The intended workflow
 
-## Run independently
+1. Create an **ingoing** or **outgoing** inspection.
+2. Select **Record & analyse walkthrough** and record one steady pass through the whole property.
+3. Tap **Complete level & analyse**. The app uploads the video and waits for a draft.
+4. Review the generated rooms and every condition suggestion. Open each item, correct it if needed, then tap **Save condition** to confirm it.
+5. Add close-up photos for anything significant. Sign and export only after all AI suggestions have been reviewed.
+
+For an outgoing inspection, the app provides the latest finalised ingoing record to the AI as a reference. It only proposes visible differences; it does not decide responsibility, causation, liability or legal compliance.
+
+## What the analysis does and does not do
+
+The analysis creates room labels, one suggestion for each condition category, notes, video timestamps, confidence levels, and coverage warnings. It uses **Not reviewed** when footage does not clearly show a category. It is intentionally conservative: a video cannot prove hidden defects, exact dimensions, a full inventory, a cause of damage, or a legal tenancy conclusion.
+
+The recording is stored on the phone as evidence. The temporary upload used for the current analysis session is deleted by the service after it returns a draft. The report records that an AI walkthrough draft was used and lists coverage warnings. The app cannot be finalised while any AI suggestion remains unreviewed.
+
+> This is not a prescribed tenancy form, a legal assessment, a tamper-evident signing system, or a substitute for an inspector’s review. Test with disposable data before using it operationally.
+
+## Run the prototype
 
 On a computer with Node.js 24 and npm:
 
@@ -20,24 +36,12 @@ npm run export:ios
 npm start
 ```
 
-Install an Expo Go version supporting SDK 57 on the iPhone. Put the computer and phone on the same network and scan the QR produced by `npm start`. Keep Metro running. No Apple Developer login is needed for this Expo Go workflow. This repository is source code, not a hosted app or TestFlight installation. If your Expo Go version does not support SDK 57, dependency migration or a compatible client is required.
+The analysis endpoint needs a separately configured authenticated backend and must not be treated as production-ready merely because the Expo client runs. The current test session uses a temporary, untracked endpoint configuration (`src/analysis.config.ts`) and a local `analysis-server.mjs`; neither is a durable deployment or an access-control system for multiple users.
 
-The screen should show **0.3.2** beside “On this phone.” Expo Go on iOS requires the Expo CLI and Expo Go app to be signed into the same Expo account for SDK 57 development sessions. Do not reuse an earlier anonymous QR code as verification of this commit.
+Install an Expo Go version supporting SDK 57 on the iPhone. Expo Go and the Expo CLI must be signed into the same Expo account. The screen should show **0.4.0** beside “On this phone.”
 
-## Read before evaluating
+## Scope limits
 
-- [Audit and comparison](AUDIT.md): what exists, what is missing, known defects.
-- [iPhone acceptance checklist](TEST-ON-IPHONE.md): required physical-device checks.
-- [Validation record](VALIDATION.md): checks actually performed and their limits.
+RoomRecord does **not** create a reliable floor plan from a walkthrough video. The old LiDAR and panorama prototypes remain supplemental experiments only; they are not part of the primary video-to-inspection workflow. Native RoomPlan integration, cloud backup, a multi-user server, role-based access controls, and signed iOS distribution are separate unfinished work.
 
-All inspection data and photographs are stored locally. There is no complete backup/restore or cloud sync. Use disposable test data during evaluation. Signature capture is local drawing capture; it is not a tamper-evident signing service. PDF output is not a guarantee of compliance with any tenancy form requirements.
-
-## LiDAR and 360 scope
-
-`src/native.ts` deliberately returns no native capture module. Plan rendering/data structures do not provide LiDAR scanning. Native RoomPlan integration and signed iOS distribution are separate unfinished work.
-
-Panorama capture collects 38 guided photographs and projects them into a 2048×1024 equirectangular image. It relies on gyro integration and estimated lens parameters; it has no feature-based alignment, parallax correction or automatic blur rejection. It is not simultaneous 360 capture. The whole-level walkthrough is a single stabilized video attached to the inspection; it is not a 360° reconstruction or a measured floor plan. Quality, memory use and touch performance require device testing.
-
-## Repository contents
-
-`src/` contains the recovered implementation; `tests/` has regression checks for data integrity and pose math. The lockfile pins the dependency resolution. CI runs type checking, tests and an iOS bundle export, not native camera or LiDAR tests. No earlier native Swift/C++ implementation is included in this recovered snapshot.
+`src/` contains the React Native client. `analysis-server.mjs` is a temporary private analysis service for this test session. `tests/` contains regression tests for data integrity, review gating and pose math. CI-style checks cover TypeScript, tests and iOS JavaScript bundle export; they do not prove real-device camera, upload, AI, or PDF behavior.

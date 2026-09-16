@@ -3,6 +3,8 @@
   "main": "index.ts",
   "dependencies": {
     "@react-native-async-storage/async-storage": "2.2.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.6.1",
     "expo": "~57.0.23",
     "expo-camera": "57.0.5",
     "expo-file-system": "57.0.7",
@@ -12,6 +14,8 @@
     "expo-sensors": "57.0.3",
     "expo-sharing": "~57.0.20",
     "expo-status-bar": "57.0.1",
+    "express": "^5.1.0",
+    "multer": "^2.0.2",
     "react": "19.2.3",
     "react-native": "0.86.3",
     "react-native-safe-area-context": "5.7.0",
@@ -27,11 +31,12 @@
     "ios": "expo start --ios",
     "typecheck": "tsc --noEmit",
     "test": "node --experimental-strip-types --test tests/*.test.mjs",
-    "export:ios": "expo export --platform ios --output-dir build-check"
+    "export:ios": "expo export --platform ios --output-dir build-check",
+    "analysis": "node analysis-server.mjs"
   },
   "private": true,
   "name": "roomrecord",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "engines": {
     "node": ">=24 <25"
   }

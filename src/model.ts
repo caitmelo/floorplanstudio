@@ -1,4 +1,5 @@
 export type Condition = "unreviewed" | "good" | "fair" | "attention" | "na";
+export type Confidence = "low" | "medium" | "high";
 export type Point = { x: number; y: number };
 export type Surface = {
   id: string;
@@ -34,6 +35,12 @@ export type CheckItem = {
   name: string;
   condition: Condition;
   note: string;
+  aiSuggestion?: {
+    source: "walkthrough-ai";
+    timestamp: string;
+    confidence: Confidence;
+    reviewed: boolean;
+  };
 };
 export type Room = {
   id: string;
@@ -53,6 +60,35 @@ export type Walkthrough = {
   path: string;
   capturedAt: string;
   durationSeconds: number;
+  status?: "captured" | "analyzing" | "analyzed" | "failed";
+  analyzedAt?: string;
+  error?: string;
+};
+export type WalkthroughDraft = {
+  summary: string;
+  confidence: Confidence;
+  coverageWarnings: string[];
+  rooms: {
+    name: string;
+    order: number;
+    confidence: Confidence;
+    walkthroughEvidence: string;
+    items: {
+      category: CheckItem["name"];
+      condition: Condition;
+      note: string;
+      timestamp: string;
+      confidence: Confidence;
+    }[];
+  }[];
+};
+export type AnalysisRecord = {
+  source: "walkthrough-ai";
+  analyzedAt: string;
+  summary: string;
+  confidence: Confidence;
+  coverageWarnings: string[];
+  reviewRequired: true;
 };
 export type Inspection = {
   id: string;
@@ -63,16 +99,14 @@ export type Inspection = {
   rooms: Room[];
   signatures: Signature[];
   walkthroughs?: Walkthrough[];
+  analysis?: AnalysisRecord;
   propertyPlan?: FloorPlan;
 };
 export type PropertyScan = {
   plan: FloorPlan;
   rooms: { roomId: string; plan: FloorPlan }[];
 };
-export function applyPropertyScan(
-  inspection: Inspection,
-  result: PropertyScan,
-) {
+export function applyPropertyScan(inspection: Inspection, result: PropertyScan) {
   if (inspection.finalizedAt) throw new Error("This inspection is finalized.");
   const ids = result.rooms.map((r) => r.roomId);
   if (
@@ -92,11 +126,8 @@ export function applyPropertyScan(
           s.length <= 0,
       )
     )
-      throw new Error(
-        "Scan contains invalid geometry. Existing plans were retained.",
-      );
+      throw new Error("Scan contains invalid geometry. Existing plans were retained.");
   }
-  // Validate every result before making any change; no half-applied scan.
   inspection.propertyPlan = result.plan;
   result.rooms.forEach(({ roomId, plan }) => {
     inspection.rooms.find((r) => r.id === roomId)!.plan = plan;
@@ -126,17 +157,19 @@ export const CONDITION_LABEL: Record<Condition, string> = {
 };
 export const uid = () =>
   `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+
+const checklist = [
+  "Walls & ceilings",
+  "Flooring",
+  "Doors & windows",
+  "Fixtures & fittings",
+  "Cleanliness",
+] as const;
 export const newRoom = (name: string): Room => ({
   id: uid(),
   name,
   evidence: [],
-  items: [
-    "Walls & ceilings",
-    "Flooring",
-    "Doors & windows",
-    "Fixtures & fittings",
-    "Cleanliness",
-  ].map((name) => ({ id: uid(), name, condition: "unreviewed", note: "" })),
+  items: checklist.map((name) => ({ id: uid(), name, condition: "unreviewed", note: "" })),
 });
 export function newInspection(
   kind: Inspection["kind"],
@@ -158,9 +191,90 @@ export function newInspection(
             ...i,
             condition: "unreviewed",
             note: "",
+            aiSuggestion: undefined,
           })),
         }))
       : ["Living room", "Kitchen", "Bedroom", "Bathroom"].map(newRoom),
+  };
+}
+function normalizedName(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+function roomForDraft(
+  draft: WalkthroughDraft["rooms"][number],
+  existing?: Room,
+): Room {
+  const previousByName = new Map(existing?.items.map((item) => [item.name, item]));
+  return {
+    id: existing?.id ?? uid(),
+    name: draft.name,
+    evidence: existing?.evidence ?? [],
+    plan: existing?.plan,
+    items: checklist.map((category) => {
+      const suggestion = draft.items.find((item) => item.category === category);
+      const previous = previousByName.get(category);
+      return {
+        id: previous?.id ?? uid(),
+        name: category,
+        condition: suggestion?.condition ?? "unreviewed",
+        note: suggestion?.note ?? "Not sufficiently visible in the walkthrough.",
+        aiSuggestion: suggestion
+          ? {
+              source: "walkthrough-ai" as const,
+              timestamp: suggestion.timestamp,
+              confidence: suggestion.confidence,
+              reviewed: false,
+            }
+          : undefined,
+      };
+    }),
+  };
+}
+export function applyWalkthroughDraft(inspection: Inspection, draft: WalkthroughDraft) {
+  if (inspection.finalizedAt) throw new Error("This finalized inspection is locked.");
+  if (!draft.rooms.length)
+    throw new Error("The walkthrough analysis did not identify any rooms.");
+  const existing = [...inspection.rooms];
+  const matched = new Set<string>();
+  const rooms = draft.rooms
+    .sort((a, b) => a.order - b.order)
+    .map((room) => {
+      const target = normalizedName(room.name);
+      const match = existing.find((candidate) => {
+        if (matched.has(candidate.id)) return false;
+        const name = normalizedName(candidate.name);
+        return name === target || name.includes(target) || target.includes(name);
+      });
+      if (match) matched.add(match.id);
+      return roomForDraft(room, match);
+    });
+  if (inspection.kind === "outgoing") {
+    for (const untouched of existing.filter((room) => !matched.has(room.id))) {
+      rooms.push({
+        ...untouched,
+        items: untouched.items.map((item) => ({
+          ...item,
+          condition: "unreviewed",
+          note: "This room was not identified in the walkthrough. Review manually.",
+          aiSuggestion: {
+            source: "walkthrough-ai",
+            timestamp: "00:00",
+            confidence: "low",
+            reviewed: false,
+          },
+        })),
+      });
+    }
+  }
+  inspection.rooms = rooms;
+  inspection.signatures = [];
+  inspection.analysis = {
+    source: "walkthrough-ai",
+    analyzedAt: new Date().toISOString(),
+    summary: draft.summary,
+    confidence: draft.confidence,
+    coverageWarnings: draft.coverageWarnings,
+    reviewRequired: true,
   };
 }
 export function progress(i: Inspection) {
@@ -178,6 +292,12 @@ export function finalizationProblem(i: Inspection): string | undefined {
     return "Add at least one room with condition items.";
   if (progress(i).done !== progress(i).total)
     return "Review every condition item before finalizing.";
+  if (
+    i.rooms
+      .flatMap((room) => room.items)
+      .some((item) => item.aiSuggestion && !item.aiSuggestion.reviewed)
+  )
+    return "Review and confirm every AI-suggested condition before finalizing.";
   if (!i.signatures.some((s) => s.role === "Inspector"))
     return "Add the inspector’s signature before finalizing.";
 }
@@ -243,20 +363,18 @@ export function demoDatabase(): Database {
 export function validateDatabase(value: unknown): Database {
   const db = value as Database;
   if (db?.version !== 1 || !Array.isArray(db.properties))
-    throw new Error(
-      "Unsupported inspection data. Existing data was not overwritten.",
-    );
+    throw new Error("Unsupported inspection data. Existing data was not overwritten.");
   for (const p of db.properties) {
     if (!p.id || typeof p.address !== "string" || !Array.isArray(p.inspections))
       throw new Error("Invalid property record.");
     for (const i of p.inspections) {
       if (
-          !i.id ||
-          !["ingoing", "outgoing"].includes(i.kind) ||
-          !Array.isArray(i.rooms) ||
-          !Array.isArray(i.signatures) ||
-          (i.walkthroughs !== undefined && !Array.isArray(i.walkthroughs))
-        )
+        !i.id ||
+        !["ingoing", "outgoing"].includes(i.kind) ||
+        !Array.isArray(i.rooms) ||
+        !Array.isArray(i.signatures) ||
+        (i.walkthroughs !== undefined && !Array.isArray(i.walkthroughs))
+      )
         throw new Error("Invalid inspection record.");
       for (const r of i.rooms) {
         if (!r.id || !Array.isArray(r.items) || !Array.isArray(r.evidence))

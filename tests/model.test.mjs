@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {newInspection, finalizationProblem, progress, compare, applyPropertyScan} from '../src/model.ts';
+import {newInspection, finalizationProblem, progress, compare, applyPropertyScan, applyWalkthroughDraft} from '../src/model.ts';
 import {integrate, IDENTITY, distance, matrix} from '../src/panorama/pose.ts';
 test('rounded progress must not permit finalization',()=>{
  const i=newInspection('ingoing');
@@ -20,6 +20,14 @@ test('new inspections keep independent whole-level walkthrough storage',()=>{
  assert.deepEqual(entry.walkthroughs,[]); assert.deepEqual(exit.walkthroughs,[]);
  entry.walkthroughs.push({id:'video',path:'evidence/level.mov',capturedAt:new Date().toISOString(),durationSeconds:20});
  assert.deepEqual(exit.walkthroughs,[]);
+});
+test('walkthrough analysis creates review-required draft without finalising',()=>{
+ const i=newInspection('ingoing');
+ applyWalkthroughDraft(i,{summary:'Draft',confidence:'medium',coverageWarnings:['Review'],rooms:[{name:'Kitchen',order:1,confidence:'medium',walkthroughEvidence:'00:10',items:['Walls & ceilings','Flooring','Doors & windows','Fixtures & fittings','Cleanliness'].map(category=>({category,condition:'good',note:'Visible',timestamp:'00:10',confidence:'medium'}))}]});
+ assert.equal(i.rooms.length,1);assert.equal(i.analysis.reviewRequired,true);assert.equal(i.rooms[0].items[0].aiSuggestion.reviewed,false);
+ i.rooms[0].items.forEach(item=>item.aiSuggestion.reviewed=true);
+ i.signatures=[{name:'Inspector',role:'Inspector',paths:['M'],signedAt:new Date().toISOString()}];
+ assert.equal(finalizationProblem(i),undefined);
 });
 test('scan validation rejects unknown rooms before modifying an inspection',()=>{
  const i=newInspection('ingoing');const before=JSON.stringify(i);

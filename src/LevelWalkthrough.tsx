@@ -12,9 +12,11 @@ export type WalkthroughCapture = {
 export default function LevelWalkthrough({
   onSave,
   onCancel,
+  analysisProgress,
 }: {
   onSave: (capture: WalkthroughCapture) => Promise<void>;
   onCancel: () => void;
+  analysisProgress?: number;
 }) {
   const [permission, requestPermission] = useCameraPermissions();
   const camera = useRef<CameraView>(null);
@@ -161,12 +163,16 @@ export default function LevelWalkthrough({
       {completing ? (
         <View style={{ flexDirection: "row", gap: 9, alignItems: "center", justifyContent: "center", padding: 13 }}>
           <ActivityIndicator color={C.green} />
-          <Text style={s.label}>Saving walkthrough to this inspection…</Text>
+          <Text style={s.label}>
+            {analysisProgress === undefined
+              ? "Creating your inspection draft…"
+              : `Uploading walkthrough · ${Math.round(analysisProgress * 100)}%`}
+          </Text>
         </View>
       ) : recording ? (
-        <Button title="Complete level & attach" icon="check" onPress={complete} />
+        <Button title="Complete level & analyse" icon="check" onPress={complete} />
       ) : capture ? (
-        <Button title="Attach walkthrough to inspection" icon="check" onPress={complete} />
+        <Button title="Analyse walkthrough" icon="check" onPress={complete} />
       ) : (
         <Button
           title={ready ? "Start full-level walkthrough" : "Preparing camera…"}

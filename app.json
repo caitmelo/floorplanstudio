@@ -2,13 +2,13 @@
   "expo": {
     "name": "RoomRecord",
     "slug": "roomrecord",
-    "version": "0.3.2",
+    "version": "0.4.0",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
     "ios": {
       "supportsTablet": false
     },
-    "description": "iPhone Expo Go edition: guided room panoramas, continuous whole-level walkthrough video, ingoing/outgoing inspections and PDF reports. No LiDAR. Experimental camera stitching; device testing pending.",
+    "description": "iPhone Expo Go edition: record one walkthrough video and create a reviewable AI draft for ingoing or outgoing rental inspections. Human review is required before finalisation.",
     "platforms": [
       "ios"
     ],
@@ -16,7 +16,7 @@
       [
         "expo-camera",
         {
-          "cameraPermission": "Allow RoomRecord to photograph inspection evidence.",
+          "cameraPermission": "Allow RoomRecord to record a walkthrough and photograph inspection evidence.",
           "recordAudioAndroid": false
         }
       ],

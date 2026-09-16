@@ -3,5 +3,7 @@ node_modules/
 build-check/
 dist/
 .env*
+src/analysis.config.ts
+scripts/test-analysis.mjs
 *.log
 .DS_Store

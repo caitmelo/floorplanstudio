@@ -1,19 +1,18 @@
-# Physical iPhone acceptance checklist
+# Physical iPhone acceptance checklist — AI walkthrough draft
 
-All checks are currently **NOT RUN**. Record device, iOS, Expo Go version, commit SHA, date, steps, result and screenshots for each test. Use disposable properties and photographs.
+All checks are currently **NOT RUN**. Record device, iOS, Expo Go version, commit SHA, date, steps, result and screenshots for every test. Use disposable properties and footage only.
 
-1. Fresh checkout: follow README. Sign Expo Go and the Expo CLI into the same Expo account, scan the locally generated Metro QR and confirm visible version 0.3.2; confirm no red error screen.
-2. Permissions: deny camera/motion separately, retry after granting permissions, confirm understandable recovery and no crash.
-3. Inspection: create a property and ingoing inspection, rename/add rooms, record each condition and notes; close/reopen and verify saved state.
-4. Evidence: photograph portrait/landscape subjects; verify correct saved orientation and room association after relaunch.
-5. Walkthrough: record one continuous full-level video through multiple rooms, tap Complete level & attach, reopen the inspection and verify it is retained. Interrupt a second recording and use Exit without saving; verify no partial walkthrough is attached.
-6. Panorama: tap Start 360° capture without waiting for the alignment indicator, complete all 38 targets in a room with textured walls, and check ceiling, floor, corners and wraparound seam. Save/reopen and drag/zoom. Record time and heat; repeat three rooms. Do not treat a successfully saved black/gapped image as a pass.
-7. Failures: interrupt a capture, background/foreground, cancel composition, rapidly tap save, and test constrained storage. Verify no skipped targets, duplicate records or inaccessible captures.
-8. Outgoing: create from ingoing; confirm baseline unchanged, items reset and changed conditions match the report.
-9. Signatures: check edits clear signatures; finalisation rejects incomplete items and absent inspector signature. Finalised records must remain locked.
-10. Report: export a small and a large photo-heavy inspection to Files. Review every PDF page for missing pictures, clipping, signature and condition accuracy. Test punctuation and non-ASCII names.
-11. Offline: after loading the app, disable network and test local evidence/report behavior; note Expo Go's development-server startup dependency separately.
-12. Retention: quit/relaunch and verify photos/panoramas/notes. Full backup and restore are not implemented; do not mark them passed.
-13. LiDAR: expected unavailable. A plan screen is not evidence of scanning. Native LiDAR acceptance remains a separate unfinished project.
+1. **Launch:** Sign Expo Go and the Expo CLI into the same account. Scan the current QR and verify the visible build is **0.4.0**, with no red error screen.
+2. **Permissions:** Deny camera permission, retry after granting it, and confirm the recovery text is understandable. Audio must remain off for a walkthrough.
+3. **Ingoing draft:** Create a property and ingoing inspection. Record one slow walkthrough through at least three identifiable spaces. Tap **Complete level & analyse** and keep the app open until a draft is returned.
+4. **Draft quality:** Verify the generated room order reflects the walkthrough; every room has five categories; each AI suggestion includes a timestamp/confidence; unseen items say **Not reviewed** rather than being guessed; and coverage warnings are present when footage is incomplete.
+5. **Review gate:** Attempt finalisation before editing AI suggestions—it must fail. Open every AI-suggested item, correct one result, tap **Save condition**, then confirm finalisation remains blocked until all AI suggestions are reviewed and an inspector signature is present.
+6. **Outgoing comparison:** Finalise a small ingoing baseline, create an outgoing inspection, record a second walkthrough with one visible change. Confirm that the draft preserves any room not detected as **Not reviewed**, and only presents visible differences for review. It must not claim cause or liability.
+7. **Upload failures:** Test unavailable network, an upload interrupted by backgrounding, a clip over the 500 MB limit, and an invalid/expired endpoint. Verify the walkthrough receives a failed status and no false draft is created.
+8. **Privacy:** Confirm that the recording stays on the phone after analysis. Confirm that the temporary upload is not accessible from another device and inspect service logs/temporary storage after a test, if available.
+9. **Photos:** Add a close-up photo to a suggested issue, relaunch the app and verify the room association and orientation.
+10. **Report:** Export an AI-assisted draft and a finalised report. Check for the AI walkthrough provenance, timestamps, coverage warnings, review status, correct notes, condition values, photos and signatures on every PDF page.
+11. **Retention:** Quit/relaunch and confirm local notes, video status, AI draft and photos remain. Backup/restore and cloud synchronization are not implemented.
+12. **Scope:** Confirm no measured floor plan, 360° reconstruction, liability decision or legal tenancy conclusion is presented as the output of a walkthrough video.
 
-A desktop bundle export or unit-test pass cannot replace these results.
+A desktop bundle export, endpoint health check or unit-test pass cannot replace these device results.

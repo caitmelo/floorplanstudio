@@ -28,6 +28,7 @@ import {
 import {
   compare,
   applyPropertyScan,
+  applyWalkthroughDraft,
   Condition,
   CONDITION_LABEL,
   Database,
@@ -60,6 +61,7 @@ import { File } from "expo-file-system";
 import SignaturePad from "./SignaturePad";
 import ExpoPanorama, { PanoramaViewer } from "./panorama/ExpoPanorama";
 import LevelWalkthrough from "./LevelWalkthrough";
+import { analyzeWalkthrough } from "./walkthroughAnalysis";
 
 type Tab = "Overview" | "Rooms" | "Plan" | "Compare" | "Report";
 type Sheet =
@@ -107,6 +109,7 @@ function Main() {
   const [evidence, setEvidence] = useState<Evidence>(),
     [permission, requestPermission] = useCameraPermissions();
   const [originals, setOriginals] = useState<string[]>([]);
+  const [analysisProgress, setAnalysisProgress] = useState<number>();
   const camera = useRef<CameraView>(null),
     [cameraReady, setCameraReady] = useState(false),
     busyRef = useRef(false);
@@ -320,19 +323,67 @@ function Main() {
     durationSeconds: number;
   }) {
     const path = await retainVideo(capture.uri);
+    const walkthroughId = uid();
     await editInspection((i) => {
       i.walkthroughs = [
         ...(i.walkthroughs ?? []),
         {
-          id: uid(),
+          id: walkthroughId,
           path,
           capturedAt: capture.capturedAt,
           durationSeconds: capture.durationSeconds,
+          status: "analyzing",
         },
       ];
     });
-    setSheet(null);
-    setNotice("Full-level walkthrough attached to this inspection.");
+    if (!inspection || !property) return;
+    setAnalysisProgress(0);
+    const baselineText = baseline
+      ? baseline.rooms
+          .map(
+            (room) =>
+              `${room.name}: ${room.items
+                .map(
+                  (item) =>
+                    `${item.name}=${CONDITION_LABEL[item.condition]}${item.note ? ` (${item.note})` : ""}`,
+                )
+                .join("; ")}`,
+          )
+          .join("\n")
+      : "";
+    try {
+      const draft = await analyzeWalkthrough(
+        fileURI(path),
+        {
+          kind: inspection.kind,
+          property: `${property.address}${property.suburb ? `, ${property.suburb}` : ""}`,
+          baseline: baselineText,
+        },
+        setAnalysisProgress,
+      );
+      await editInspection((i) => {
+        applyWalkthroughDraft(i, draft);
+        const walkthrough = i.walkthroughs?.find((item) => item.id === walkthroughId);
+        if (walkthrough) {
+          walkthrough.status = "analyzed";
+          walkthrough.analyzedAt = new Date().toISOString();
+          walkthrough.error = undefined;
+        }
+      });
+      setSheet(null);
+      setNotice("AI draft created. Review each suggested condition before signing.");
+    } catch (error) {
+      await editInspection((i) => {
+        const walkthrough = i.walkthroughs?.find((item) => item.id === walkthroughId);
+        if (walkthrough) {
+          walkthrough.status = "failed";
+          walkthrough.error = error instanceof Error ? error.message : String(error);
+        }
+      });
+      throw error;
+    } finally {
+      setAnalysisProgress(undefined);
+    }
   }
   async function addSignature() {
     if (!name.trim() || !signature.length)
@@ -435,7 +486,7 @@ function Main() {
             style={[l.dot, { backgroundColor: saving ? C.amber : C.green }]}
           />
           <Text style={{ color: C.muted, fontSize: 11 }}>
-            {saving ? "Saving" : "On this phone · 0.3.2"}
+            {saving ? "Saving" : "On this phone · 0.4.0"}
           </Text>
         </View>
       </View>
@@ -615,9 +666,9 @@ function Main() {
             <View style={[s.row, { alignItems: "flex-start" }]}>
               <Icon name="shield" color={C.muted} size={20} />
               <Text style={[s.body, { flex: 1, fontSize: 12 }]}>
-                Records stay on this device. Export reports to keep an external
-                copy. 360° capture works in Expo Go on iPhone. LiDAR needs a
-                separate native build.
+                Inspection records stay on this device. Walkthrough videos are
+                temporarily uploaded only when you request an AI draft, then the
+                analysis upload is deleted. Export reports to retain a copy.
               </Text>
             </View>
           </>
@@ -687,20 +738,29 @@ function Main() {
                     <Icon name="camera" color={C.green} size={28} />
                   </View>
                   <Text style={s.body}>
-                    Record the entire level in one continuous video, then attach it
-                    to this inspection. It is separate from room photos and does not
-                    require a room-by-room 360° capture.
+                    Record the entire level once. The video is uploaded for AI
+                    analysis, then becomes a room-by-room draft that you review
+                    before it can be signed or exported.
                   </Text>
                   {(inspection.walkthroughs ?? []).length ? (
                     <Text style={s.body}>
                       {(inspection.walkthroughs ?? []).length} walkthrough
                       {(inspection.walkthroughs ?? []).length === 1 ? "" : "s"}{" "}
-                      attached · latest {new Date((inspection.walkthroughs ?? [])[0].capturedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                      · latest {new Date((inspection.walkthroughs ?? [])[0].capturedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} · {((inspection.walkthroughs ?? [])[0].status ?? "captured") === "analyzing" ? "analysing" : ((inspection.walkthroughs ?? [])[0].status ?? "captured")}
                     </Text>
                   ) : null}
+                  {inspection.analysis && (
+                    <View style={{ gap: 7 }}>
+                      <Tag text={`AI DRAFT · ${inspection.analysis.confidence} confidence`} amber />
+                      <Text style={s.body}>{inspection.analysis.summary}</Text>
+                      {inspection.analysis.coverageWarnings.map((warning) => (
+                        <Text key={warning} style={s.body}>• {warning}</Text>
+                      ))}
+                    </View>
+                  )}
                   {!locked && (
                     <Button
-                      title="Record full-level walkthrough"
+                      title={inspection.analysis ? "Record & re-analyse walkthrough" : "Record & analyse walkthrough"}
                       icon="camera"
                       disabled={!!busy}
                       onPress={() =>
@@ -713,10 +773,10 @@ function Main() {
                 </Card>
                 <SectionTitle title="Next steps" />
                 <Task
-                  icon="scan"
-                  title="Scan the property floor plan"
-                  body="Walk between rooms in one continuous scan."
-                  onPress={() => setTab("Plan")}
+                  icon="check"
+                  title="Review the AI draft"
+                  body="Confirm every suggested condition and add detail photos where needed."
+                  onPress={() => setTab("Rooms")}
                 />
                 <Task
                   icon="home"
@@ -753,23 +813,13 @@ function Main() {
             )}
             {tab === "Plan" && (
               <>
-                <SectionTitle title="Property floor plan" />
+                <SectionTitle title="Coverage and floor plan" />
                 <Text style={s.body}>
-                  Scan connected rooms on one floor. Keep the camera active as
-                  you walk between rooms so their positions stay aligned.
+                  A walkthrough video creates an inspection draft, not a measured
+                  floor plan. It cannot reliably infer room dimensions, walls or
+                  boundaries. Add a verified plan separately if your report needs
+                  one.
                 </Text>
-                {!locked && (
-                  <Button
-                    title={
-                      inspection.propertyPlan
-                        ? "Rescan property"
-                        : "Start LiDAR floor scan"
-                    }
-                    icon="scan"
-                    disabled={!!busy}
-                    onPress={() => work("Opening floor scanner…", scanProperty)}
-                  />
-                )}
                 {inspection.propertyPlan ? (
                   <>
                     <FloorPlanView
@@ -825,12 +875,13 @@ function Main() {
                   </>
                 ) : (
                   <Card>
-                    <Icon name="plan" size={40} />
-                    <Text style={s.h2}>One connected floor plan</Text>
+                    <Icon name="camera" size={40} />
+                    <Text style={s.h2}>Walkthrough coverage</Text>
                     <Text style={s.body}>
-                      Scan rooms in the order shown under Rooms. After saving
-                      each room, walk into the next one. You can finish after
-                      any saved room.
+                      Record slowly through every room, open cupboards or areas
+                      that matter, and capture detail photos for marks or damage.
+                      The AI will mark anything it cannot clearly see as Not
+                      reviewed rather than guessing.
                     </Text>
                   </Card>
                 )}
@@ -1003,8 +1054,9 @@ function Main() {
                     </View>
                   </View>
                   <Text style={s.body}>
-                    Includes condition items, notes, captured photos, room plans
-                    and recorded signatures.
+                    Includes condition items, notes, captured photos and recorded
+                    signatures. AI walkthrough suggestions remain a draft until you
+                    open and save each item after review.
                   </Text>
                   <Button
                     title="Export PDF report"
@@ -1335,6 +1387,7 @@ function Main() {
               <LevelWalkthrough
                 onSave={saveWalkthrough}
                 onCancel={() => setSheet(null)}
+                analysisProgress={analysisProgress}
               />
             ) : sheet === "viewer" && evidence ? (
               <PanoramaViewer path={evidence.path} />
@@ -1416,8 +1469,8 @@ function Main() {
                     ))}
                     <Text style={s.body}>
                       {kind === "outgoing"
-                        ? "Uses the latest finalized ingoing inspection as the baseline. New photos, scans and condition ratings are recorded separately."
-                        : "Start a fresh condition record for a new tenancy."}
+                        ? "The AI will use the latest finalized ingoing inspection as a reference, then flag only clearly visible differences for your review."
+                        : "Record one walkthrough and let the AI create a reviewable condition draft."}
                     </Text>
                     <Button
                       title="Start inspection"
@@ -1458,7 +1511,9 @@ function Main() {
                 {sheet === "item" && (
                   <>
                     <Text style={s.body}>
-                      Record the condition you can observe.
+                      {itemId && room?.items.find((item) => item.id === itemId)?.aiSuggestion
+                        ? `AI suggestion from ${room.items.find((item) => item.id === itemId)?.aiSuggestion?.timestamp} · ${room.items.find((item) => item.id === itemId)?.aiSuggestion?.confidence} confidence. Confirm or correct it from the walkthrough before saving.`
+                        : "Record the condition you can observe."}
                     </Text>
                     <View style={{ gap: 9 }}>
                       {(
@@ -1494,6 +1549,7 @@ function Main() {
                             const i = r.items.find((i) => i.id === itemId)!;
                             i.condition = condition;
                             i.note = detail.trim();
+                            if (i.aiSuggestion) i.aiSuggestion.reviewed = true;
                           });
                           setSheet(null);
                         })
