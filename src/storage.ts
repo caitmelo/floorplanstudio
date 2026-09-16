@@ -22,6 +22,14 @@ export async function retainPhoto(uri: string): Promise<string> {
   new File(uri).copy(new File(Paths.document, path));
   return path;
 }
+export async function retainVideo(uri: string): Promise<string> {
+  if (Platform.OS === "web") return uri;
+  const dir = new Directory(Paths.document, "evidence");
+  dir.create({ intermediates: true, idempotent: true });
+  const path = `evidence/${uid()}.mov`;
+  new File(uri).copy(new File(Paths.document, path));
+  return path;
+}
 export async function imageData(path: string) {
   const uri = fileURI(path);
   if (uri.startsWith("data:")) return uri;

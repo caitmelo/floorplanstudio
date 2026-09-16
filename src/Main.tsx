@@ -44,7 +44,13 @@ import {
   Signature,
   uid,
 } from "./model";
-import { fileURI, loadDatabase, retainPhoto, saveDatabase } from "./storage";
+import {
+  fileURI,
+  loadDatabase,
+  retainPhoto,
+  retainVideo,
+  saveDatabase,
+} from "./storage";
 import { captureModule, nativeReady } from "./native";
 import { exportFloorPlan, exportReport } from "./report";
 import { planSVG } from "./geometry";
@@ -53,10 +59,12 @@ import * as Sharing from "expo-sharing";
 import { File } from "expo-file-system";
 import SignaturePad from "./SignaturePad";
 import ExpoPanorama, { PanoramaViewer } from "./panorama/ExpoPanorama";
+import LevelWalkthrough from "./LevelWalkthrough";
 
 type Tab = "Overview" | "Rooms" | "Plan" | "Compare" | "Report";
 type Sheet =
   | "panorama"
+  | "walkthrough"
   | "originals"
   | "viewer"
   | "property"
@@ -169,10 +177,12 @@ function Main() {
   }
   function closeSheet() {
     if (busy) return;
-    if (sheet === "panorama") {
+    if (sheet === "panorama" || sheet === "walkthrough") {
       Alert.alert(
-        "Leave panorama capture?",
-        "A panorama is attached to the report only after you tap Save panorama to this room.",
+        sheet === "panorama" ? "Leave panorama capture?" : "Leave level walkthrough?",
+        sheet === "panorama"
+          ? "A panorama is attached to the room only after you tap Save panorama to this room."
+          : "The walkthrough is attached to the inspection only after you tap Complete level & attach.",
         [
           { text: "Keep capturing", style: "cancel" },
           {
@@ -304,6 +314,26 @@ function Main() {
     setSheet(null);
     setNotice("Photo saved.");
   }
+  async function saveWalkthrough(capture: {
+    uri: string;
+    capturedAt: string;
+    durationSeconds: number;
+  }) {
+    const path = await retainVideo(capture.uri);
+    await editInspection((i) => {
+      i.walkthroughs = [
+        ...(i.walkthroughs ?? []),
+        {
+          id: uid(),
+          path,
+          capturedAt: capture.capturedAt,
+          durationSeconds: capture.durationSeconds,
+        },
+      ];
+    });
+    setSheet(null);
+    setNotice("Full-level walkthrough attached to this inspection.");
+  }
   async function addSignature() {
     if (!name.trim() || !signature.length)
       throw new Error("Enter your name and draw a signature.");
@@ -405,7 +435,7 @@ function Main() {
             style={[l.dot, { backgroundColor: saving ? C.amber : C.green }]}
           />
           <Text style={{ color: C.muted, fontSize: 11 }}>
-            {saving ? "Saving" : "On this phone · 0.3.1"}
+            {saving ? "Saving" : "On this phone · 0.3.2"}
           </Text>
         </View>
       </View>
@@ -648,6 +678,39 @@ function Main() {
                   />
                   <Stat value={String(stats!.issues)} label="Need attention" />
                 </View>
+                <Card style={{ backgroundColor: "#eaf0e2", borderColor: "#dce5ce" }}>
+                  <View style={s.between}>
+                    <View style={{ flex: 1, gap: 4 }}>
+                      <Text style={s.eyebrow}>WHOLE-LEVEL EVIDENCE</Text>
+                      <Text style={s.h2}>One continuous walkthrough</Text>
+                    </View>
+                    <Icon name="camera" color={C.green} size={28} />
+                  </View>
+                  <Text style={s.body}>
+                    Record the entire level in one continuous video, then attach it
+                    to this inspection. It is separate from room photos and does not
+                    require a room-by-room 360° capture.
+                  </Text>
+                  {(inspection.walkthroughs ?? []).length ? (
+                    <Text style={s.body}>
+                      {(inspection.walkthroughs ?? []).length} walkthrough
+                      {(inspection.walkthroughs ?? []).length === 1 ? "" : "s"}{" "}
+                      attached · latest {new Date((inspection.walkthroughs ?? [])[0].capturedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                    </Text>
+                  ) : null}
+                  {!locked && (
+                    <Button
+                      title="Record full-level walkthrough"
+                      icon="camera"
+                      disabled={!!busy}
+                      onPress={() =>
+                        work("Opening walkthrough camera…", async () => {
+                          setSheet("walkthrough");
+                        })
+                      }
+                    />
+                  )}
+                </Card>
                 <SectionTitle title="Next steps" />
                 <Task
                   icon="scan"
@@ -1231,6 +1294,7 @@ function Main() {
                       signature: "Sign inspection",
                       photo: "Detail photo",
                       panorama: "Capture 360°",
+                      walkthrough: "Full-level walkthrough",
                       viewer: "Explore 360°",
                       originals: "Original capture photos",
                       evidence: "Room evidence",
@@ -1239,12 +1303,15 @@ function Main() {
                 }
               </Text>
               <Pressable
-                accessibilityLabel="Close"
+                accessibilityLabel="Close capture"
+                accessibilityHint="Exit this screen without saving a capture"
                 disabled={!!busy}
                 onPress={closeSheet}
-                style={l.iconButton}
+                hitSlop={12}
+                style={l.closeButton}
               >
                 <Icon name="close" />
+                <Text style={l.closeText}>Close</Text>
               </Pressable>
             </View>
             {!!notice && <Text style={l.modalNotice}>{notice}</Text>}
@@ -1262,6 +1329,12 @@ function Main() {
                   setSheet(null);
                   setNotice("Panorama saved to this room.");
                 }}
+                onCancel={() => setSheet(null)}
+              />
+            ) : sheet === "walkthrough" ? (
+              <LevelWalkthrough
+                onSave={saveWalkthrough}
+                onCancel={() => setSheet(null)}
               />
             ) : sheet === "viewer" && evidence ? (
               <PanoramaViewer path={evidence.path} />
@@ -1653,6 +1726,18 @@ const l = StyleSheet.create({
   },
   dot: { height: 5, width: 5, borderRadius: 5 },
   iconButton: { padding: 8 },
+  closeButton: {
+    minHeight: 46,
+    minWidth: 76,
+    paddingHorizontal: 10,
+    borderRadius: 12,
+    backgroundColor: "#edf2e6",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 4,
+  },
+  closeText: { fontSize: 12, fontWeight: "700", color: C.ink },
   notice: {
     flexDirection: "row",
     gap: 10,

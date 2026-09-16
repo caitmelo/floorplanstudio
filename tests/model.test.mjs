@@ -15,6 +15,12 @@ test('outgoing resets evidence and reviews without mutating baseline',()=>{
  assert.equal(exit.rooms[0].items[0].condition,'unreviewed'); assert.equal(exit.rooms[0].items[0].note,'');
  exit.rooms[0].items[0].condition='attention';assert.equal(entry.rooms[0].items[0].condition,'good'); assert.equal(compare(exit,entry).filter(x=>x.changed).length,1);
 });
+test('new inspections keep independent whole-level walkthrough storage',()=>{
+ const entry=newInspection('ingoing'); const exit=newInspection('outgoing',entry);
+ assert.deepEqual(entry.walkthroughs,[]); assert.deepEqual(exit.walkthroughs,[]);
+ entry.walkthroughs.push({id:'video',path:'evidence/level.mov',capturedAt:new Date().toISOString(),durationSeconds:20});
+ assert.deepEqual(exit.walkthroughs,[]);
+});
 test('scan validation rejects unknown rooms before modifying an inspection',()=>{
  const i=newInspection('ingoing');const before=JSON.stringify(i);
  assert.throws(()=>applyPropertyScan(i,{plan:{surfaces:[]},rooms:[{roomId:'missing',plan:{surfaces:[]}}]})); assert.equal(JSON.stringify(i),before);

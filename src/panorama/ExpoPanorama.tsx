@@ -100,8 +100,10 @@ export function PanoramaViewer({ path }: { path: string }) {
 }
 export default function ExpoPanorama({
   onSave,
+  onCancel,
 }: {
   onSave: (result: Result) => Promise<void>;
+  onCancel: () => void;
 }) {
   useKeepAwake();
   const [permission, requestPermission] = useCameraPermissions();
@@ -194,6 +196,7 @@ export default function ExpoPanorama({
         throw new Error("Motion sensors are not available.");
       setError("");
       setMotion(true);
+      setHint("Camera ready. Tap Start 360° capture when you are ready.");
     } catch (e) {
       setError(String(e instanceof Error ? e.message : e));
     }
@@ -246,12 +249,12 @@ export default function ExpoPanorama({
       const first = !frames.current.length;
       const match = first
         ? level.current
-        : Math.abs(dp) < 6 && (Math.abs(target.pitch) > 85 || Math.abs(dy) < 6);
-      const still = speed.current < 2;
+        : Math.abs(dp) < 10 && (Math.abs(target.pitch) > 85 || Math.abs(dy) < 10);
+      const still = speed.current < 6;
       if (match && still) {
         if (!holding.current) holding.current = Date.now();
       } else holding.current = 0;
-      const held = !!holding.current && Date.now() - holding.current > 800;
+      const held = !!holding.current && Date.now() - holding.current > 500;
       setAligned(held);
       setHint(
         !match
@@ -273,10 +276,13 @@ export default function ExpoPanorama({
       saving.current ||
       !ready ||
       fatal ||
-      stageRef.current !== "capture" ||
-      Date.now() - sensorTime.current > 600
+      stageRef.current !== "capture"
     )
       return;
+    if (!motion || Date.now() - sensorTime.current > 600) {
+      setError("Waiting for motion sensors. Keep the app open and try again.");
+      return;
+    }
     saving.current = true;
     setTaking(true);
     setError("");
@@ -474,6 +480,8 @@ export default function ExpoPanorama({
                 ? "Ceiling above you"
                 : "Floor beneath you"}{" "}
         · Rotate around the camera lens from one spot. Keep the phone portrait.
+        Tap Start to take the first view; the reticle only helps automatic follow-up
+        captures.
       </Text>
       {permission?.granted && motion ? (
         <View
@@ -538,10 +546,11 @@ export default function ExpoPanorama({
         />
       )}
       <Button
-        title={count ? "Capture aligned view" : "Start 360° capture"}
-        disabled={!aligned || !ready || taking || fatal}
+        title={count ? "Capture next view" : "Start 360° capture"}
+        disabled={!ready || !motion || taking || fatal}
         onPress={() => void take()}
       />
+      <Button secondary title="Exit without saving" onPress={onCancel} />
     </View>
   );
 }

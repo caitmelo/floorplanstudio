@@ -2,13 +2,13 @@
   "expo": {
     "name": "RoomRecord",
     "slug": "roomrecord",
-    "version": "0.3.1",
+    "version": "0.3.2",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
     "ios": {
       "supportsTablet": false
     },
-    "description": "iPhone Expo Go edition: guided 360 panorama capture, ingoing/outgoing inspections and PDF reports. No LiDAR. Experimental camera stitching; first device test pending.",
+    "description": "iPhone Expo Go edition: guided room panoramas, continuous whole-level walkthrough video, ingoing/outgoing inspections and PDF reports. No LiDAR. Experimental camera stitching; device testing pending.",
     "platforms": [
       "ios"
     ],

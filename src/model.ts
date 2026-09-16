@@ -48,6 +48,12 @@ export type Signature = {
   paths: string[];
   signedAt: string;
 };
+export type Walkthrough = {
+  id: string;
+  path: string;
+  capturedAt: string;
+  durationSeconds: number;
+};
 export type Inspection = {
   id: string;
   kind: "ingoing" | "outgoing";
@@ -56,6 +62,7 @@ export type Inspection = {
   baselineId?: string;
   rooms: Room[];
   signatures: Signature[];
+  walkthroughs?: Walkthrough[];
   propertyPlan?: FloorPlan;
 };
 export type PropertyScan = {
@@ -140,6 +147,7 @@ export function newInspection(
     kind,
     createdAt: new Date().toISOString(),
     signatures: [],
+    walkthroughs: [],
     baselineId: baseline?.id,
     rooms: baseline
       ? baseline.rooms.map((r) => ({
@@ -243,11 +251,12 @@ export function validateDatabase(value: unknown): Database {
       throw new Error("Invalid property record.");
     for (const i of p.inspections) {
       if (
-        !i.id ||
-        !["ingoing", "outgoing"].includes(i.kind) ||
-        !Array.isArray(i.rooms) ||
-        !Array.isArray(i.signatures)
-      )
+          !i.id ||
+          !["ingoing", "outgoing"].includes(i.kind) ||
+          !Array.isArray(i.rooms) ||
+          !Array.isArray(i.signatures) ||
+          (i.walkthroughs !== undefined && !Array.isArray(i.walkthroughs))
+        )
         throw new Error("Invalid inspection record.");
       for (const r of i.rooms) {
         if (!r.id || !Array.isArray(r.items) || !Array.isArray(r.evidence))
