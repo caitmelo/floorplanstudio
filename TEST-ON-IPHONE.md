@@ -1,18 +1,18 @@
-# Physical iPhone acceptance checklist — AI walkthrough draft
+# RoomRecord v0.5.0 — physical iPhone acceptance checklist
 
-All checks are currently **NOT RUN**. Record device, iOS, Expo Go version, commit SHA, date, steps, result and screenshots for every test. Use disposable properties and footage only.
+All checks are currently **NOT RUN**. Record the iPhone model, iOS version, Expo Go version, commit SHA, date, result and screenshots. Use disposable test footage and properties.
 
-1. **Launch:** Sign Expo Go and the Expo CLI into the same account. Scan the current QR and verify the visible build is **0.4.0**, with no red error screen.
-2. **Permissions:** Deny camera permission, retry after granting it, and confirm the recovery text is understandable. Audio must remain off for a walkthrough.
-3. **Ingoing draft:** Create a property and ingoing inspection. Record one slow walkthrough through at least three identifiable spaces. Tap **Complete level & analyse** and keep the app open until a draft is returned.
-4. **Draft quality:** Verify the generated room order reflects the walkthrough; every room has five categories; each AI suggestion includes a timestamp/confidence; unseen items say **Not reviewed** rather than being guessed; and coverage warnings are present when footage is incomplete.
-5. **Review gate:** Attempt finalisation before editing AI suggestions—it must fail. Open every AI-suggested item, correct one result, tap **Save condition**, then confirm finalisation remains blocked until all AI suggestions are reviewed and an inspector signature is present.
-6. **Outgoing comparison:** Finalise a small ingoing baseline, create an outgoing inspection, record a second walkthrough with one visible change. Confirm that the draft preserves any room not detected as **Not reviewed**, and only presents visible differences for review. It must not claim cause or liability.
-7. **Upload failures:** Test unavailable network, an upload interrupted by backgrounding, a clip over the 500 MB limit, and an invalid/expired endpoint. Verify the walkthrough receives a failed status and no false draft is created.
-8. **Privacy:** Confirm that the recording stays on the phone after analysis. Confirm that the temporary upload is not accessible from another device and inspect service logs/temporary storage after a test, if available.
-9. **Photos:** Add a close-up photo to a suggested issue, relaunch the app and verify the room association and orientation.
-10. **Report:** Export an AI-assisted draft and a finalised report. Check for the AI walkthrough provenance, timestamps, coverage warnings, review status, correct notes, condition values, photos and signatures on every PDF page.
-11. **Retention:** Quit/relaunch and confirm local notes, video status, AI draft and photos remain. Backup/restore and cloud synchronization are not implemented.
-12. **Scope:** Confirm no measured floor plan, 360° reconstruction, liability decision or legal tenancy conclusion is presented as the output of a walkthrough video.
+1. **One-button entry:** Launch the app, ensure the landing page contains only the primary **Start scanning** action, tap it, grant Camera permission and confirm the rear camera begins recording without property setup.
+2. **Exit control:** Tap the top-right X during recording. Choose **Keep recording**, then repeat and choose **Discard recording**. Confirm the recording is neither analysed nor retained, and no empty “New inspection” record remains.
+3. **Coverage guidance:** Grant Motion permission. Slowly pan and tilt through a room. Confirm cells turn green only as camera direction changes, live prompts are readable, and “Slow down”, “Move up” and “Move down” appear when appropriate. Confirm copy says viewing coverage, not a measured or spatial scan.
+4. **Motion fallback:** Deny Motion permission and confirm recording remains available, with the honest “Keep a steady sweep” instruction explaining that motion access enables live shading. No fabricated coverage percentage may be presented as real coverage.
+5. **Video capture:** Record a three-room walkthrough at chest height, including walls, ceiling line, floor, doors and windows. Tap **Complete & analyse**. Ensure recording stops cleanly and the progress screen remains responsive.
+6. **Analysis:** Verify upload progress, analysis-stage labels and the “Your recording has been analysed” confirmation. Confirm the report includes all recognisable rooms, one evidence still for each room where available, timestamps and confidence, plus coverage warnings for unseen areas.
+7. **Editing:** Open a room, then an AI-suggested condition. Confirm its linked video still and timestamp match the note. Change its condition and text, save it, and confirm the card changes to **Reviewed by inspector**.
+8. **Property details:** Add address, suburb/postcode and select ingoing/outgoing after the scan. Confirm these values appear in both the app report and the exported PDF.
+9. **Report actions:** Use **Home**, **Share** and **Save PDF**. Check the native share sheet, Files destination, PDF room sections, video-evidence stills, report notes and AI-draft disclosure.
+10. **Failure recovery:** Test airplane mode before upload, an interrupted upload, an over-500 MB recording, backgrounding during recording and backgrounding during analysis. Confirm the app provides an understandable error and lets the user retry without inventing a report.
+11. **Privacy retention:** Confirm the original recording stays on the iPhone after analysis. Inspect the temporary test service workspace/logs after a run to confirm uploaded video and generated temporary artifacts are removed.
+12. **Scope:** Verify that no screen calls camera coverage a LiDAR scan, 3D spatial mesh, floor plan, real-wall measurement, legal condition determination or liability conclusion.
 
-A desktop bundle export, endpoint health check or unit-test pass cannot replace these device results.
+Passing TypeScript, unit tests and an iOS JavaScript export does not replace any of these device checks.

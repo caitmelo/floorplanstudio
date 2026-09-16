@@ -2,13 +2,13 @@
   "expo": {
     "name": "RoomRecord",
     "slug": "roomrecord",
-    "version": "0.4.0",
+    "version": "0.5.0",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
     "ios": {
       "supportsTablet": false
     },
-    "description": "iPhone Expo Go edition: record one walkthrough video and create a reviewable AI draft for ingoing or outgoing rental inspections. Human review is required before finalisation.",
+    "description": "Capture one guided walkthrough, then review an editable room-by-room rental inspection report with video evidence. Human review is required before sharing.",
     "platforms": [
       "ios"
     ],
@@ -23,7 +23,7 @@
       [
         "expo-sensors",
         {
-          "motionPermission": "Allow RoomRecord to guide panorama capture using phone motion."
+          "motionPermission": "Allow RoomRecord to guide your walkthrough coverage using phone motion."
         }
       ]
     ]

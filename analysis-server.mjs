@@ -55,7 +55,7 @@ Tasks:
 3. Use condition "attention" only for an objectively visible issue (damage, marked wear, missing/broken fixture, clearly poor cleanliness), and describe exactly what and where. Never say it was caused by a tenant.
 4. Use "good" only where the category is clearly visible and appears sound. Use "fair" for visible minor wear. Use "unreviewed" when a category is not sufficiently visible. Use "na" only when the category is clearly absent.
 5. For outgoing inspections, do not label a change unless it is visible in this video AND meaningful against the baseline text. If a comparison cannot be made, say so in the note.
-6. Give a video timestamp in MM:SS for every observation. Confidence must be low, medium, or high. Explain coverage limitations in plain language.
+6. Give a video timestamp in MM:SS for every observation. Use the clearest moment that visually supports the note, because RoomRecord will extract a still image at that timestamp for the room report. Confidence must be low, medium, or high. Explain coverage limitations in plain language.
 
 Return ONLY valid JSON, with no markdown and no text before or after it, matching this exact shape:
 {
@@ -143,7 +143,60 @@ function draftOrThrow(raw) {
   };
 }
 
-async function analyzeVideo(videoPath, context) {
+function timestampSeconds(timestamp) {
+  const [minutes, seconds] = String(timestamp).split(":").map(Number);
+  return Math.max(0, (minutes || 0) * 60 + (seconds || 0));
+}
+
+async function stillAt(videoPath, timestamp, workspace) {
+  const name = `evidence-${timestamp.replace(/:/g, "-")}-${Math.random().toString(36).slice(2)}.jpg`;
+  const destination = path.join(workspace, name);
+  await execFileAsync(
+    "ffmpeg",
+    [
+      "-hide_banner",
+      "-loglevel",
+      "error",
+      "-ss",
+      String(timestampSeconds(timestamp)),
+      "-i",
+      videoPath,
+      "-frames:v",
+      "1",
+      "-vf",
+      "scale=480:-2",
+      "-q:v",
+      "5",
+      "-y",
+      destination,
+    ],
+    { timeout: 60_000 },
+  );
+  const data = await readFile(destination);
+  if (data.byteLength > 350_000) return undefined;
+  return `data:image/jpeg;base64,${data.toString("base64")}`;
+}
+
+async function attachWalkthroughStills(draft, videoPath, workspace) {
+  for (const room of draft.rooms) {
+    const timestamps = [...new Set(room.items.map((item) => item.timestamp))]
+      .filter((timestamp) => /^\d{1,2}:\d{2}$/.test(timestamp))
+      .slice(0, 2);
+    const stills = [];
+    for (const timestamp of timestamps) {
+      try {
+        const dataUri = await stillAt(videoPath, timestamp, workspace);
+        if (dataUri) stills.push({ timestamp, dataUri });
+      } catch (error) {
+        console.warn(`Could not extract walkthrough still at ${timestamp}`, error);
+      }
+    }
+    room.stills = stills;
+  }
+  return draft;
+}
+
+async function analyzeVideo(videoPath, context, workspace) {
   const { stdout, stderr } = await execFileAsync(
     "manus-analyze-video",
     [videoPath, strictPrompt(context)],
@@ -153,7 +206,7 @@ async function analyzeVideo(videoPath, context) {
   const analysisPath = output.match(/Full analysis result saved to:\s*(.+\.md)/i)?.[1]?.trim();
   const analysis = analysisPath && existsSync(analysisPath) ? await readFile(analysisPath, "utf8") : output;
   try {
-    return draftOrThrow(extractJson(analysis));
+    return attachWalkthroughStills(draftOrThrow(extractJson(analysis)), videoPath, workspace);
   } finally {
     if (analysisPath) await rm(analysisPath, { force: true });
   }
@@ -179,7 +232,7 @@ app.post("/v1/walkthrough-analysis", upload.single("walkthrough"), async (req, r
       kind,
       property: String(req.body.property || ""),
       baseline: String(req.body.baseline || ""),
-    });
+    }, workspace);
     res.json({ draft, sourceVideoDeleted: true, reviewedRequired: true });
   } catch (error) {
     console.error("Walkthrough analysis failed", error);

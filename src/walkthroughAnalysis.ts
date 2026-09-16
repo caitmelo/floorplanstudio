@@ -39,7 +39,13 @@ function assertDraft(value: unknown): WalkthroughDraft {
     });
     if (items.length !== categories.length)
       throw new Error("Analysis did not assess every room category.");
-    return { ...room, items };
+    const stills = (room.stills ?? []).filter(
+      (still) =>
+        /^\d{1,2}:\d{2}$/.test(still.timestamp) &&
+        /^data:image\/jpeg;base64,/.test(still.dataUri) &&
+        still.dataUri.length < 700_000,
+    );
+    return { ...room, items, stills };
   });
   return { ...data.draft, rooms };
 }

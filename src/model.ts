@@ -24,6 +24,8 @@ export type Evidence = {
   path: string;
   capturedAt: string;
   caption: string;
+  source?: "walkthrough" | "manual";
+  timestamp?: string;
   coverage?: number;
   sourceDirectory?: string;
   qualityFlags?: string[];
@@ -40,6 +42,7 @@ export type CheckItem = {
     timestamp: string;
     confidence: Confidence;
     reviewed: boolean;
+    evidenceId?: string;
   };
 };
 export type Room = {
@@ -47,6 +50,8 @@ export type Room = {
   name: string;
   items: CheckItem[];
   evidence: Evidence[];
+  walkthroughEvidence?: string;
+  confidence?: Confidence;
   plan?: FloorPlan;
 };
 export type Signature = {
@@ -60,6 +65,7 @@ export type Walkthrough = {
   path: string;
   capturedAt: string;
   durationSeconds: number;
+  coverage?: number;
   status?: "captured" | "analyzing" | "analyzed" | "failed";
   analyzedAt?: string;
   error?: string;
@@ -73,6 +79,7 @@ export type WalkthroughDraft = {
     order: number;
     confidence: Confidence;
     walkthroughEvidence: string;
+    stills?: { timestamp: string; dataUri: string }[];
     items: {
       category: CheckItem["name"];
       condition: Condition;
@@ -205,10 +212,24 @@ function roomForDraft(
   existing?: Room,
 ): Room {
   const previousByName = new Map(existing?.items.map((item) => [item.name, item]));
+  const walkthroughEvidence = (existing?.evidence ?? []).filter(
+    (item) => item.source !== "walkthrough",
+  );
+  const stills = (draft.stills ?? []).map((still) => ({
+    id: uid(),
+    kind: "photo" as const,
+    path: still.dataUri,
+    capturedAt: new Date().toISOString(),
+    caption: `Walkthrough evidence · ${still.timestamp}`,
+    source: "walkthrough" as const,
+    timestamp: still.timestamp,
+  }));
   return {
     id: existing?.id ?? uid(),
     name: draft.name,
-    evidence: existing?.evidence ?? [],
+    evidence: [...stills, ...walkthroughEvidence],
+    walkthroughEvidence: draft.walkthroughEvidence,
+    confidence: draft.confidence,
     plan: existing?.plan,
     items: checklist.map((category) => {
       const suggestion = draft.items.find((item) => item.category === category);
@@ -224,6 +245,7 @@ function roomForDraft(
               timestamp: suggestion.timestamp,
               confidence: suggestion.confidence,
               reviewed: false,
+              evidenceId: stills.find((still) => still.timestamp === suggestion.timestamp)?.id,
             }
           : undefined,
       };

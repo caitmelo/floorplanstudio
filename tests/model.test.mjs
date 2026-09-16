@@ -21,10 +21,11 @@ test('new inspections keep independent whole-level walkthrough storage',()=>{
  entry.walkthroughs.push({id:'video',path:'evidence/level.mov',capturedAt:new Date().toISOString(),durationSeconds:20});
  assert.deepEqual(exit.walkthroughs,[]);
 });
-test('walkthrough analysis creates review-required draft without finalising',()=>{
+test('walkthrough analysis creates review-required draft with video evidence',()=>{
  const i=newInspection('ingoing');
- applyWalkthroughDraft(i,{summary:'Draft',confidence:'medium',coverageWarnings:['Review'],rooms:[{name:'Kitchen',order:1,confidence:'medium',walkthroughEvidence:'00:10',items:['Walls & ceilings','Flooring','Doors & windows','Fixtures & fittings','Cleanliness'].map(category=>({category,condition:'good',note:'Visible',timestamp:'00:10',confidence:'medium'}))}]});
+ applyWalkthroughDraft(i,{summary:'Draft',confidence:'medium',coverageWarnings:['Review'],rooms:[{name:'Kitchen',order:1,confidence:'medium',walkthroughEvidence:'00:10',stills:[{timestamp:'00:10',dataUri:'data:image/jpeg;base64,aGVsbG8='}],items:['Walls & ceilings','Flooring','Doors & windows','Fixtures & fittings','Cleanliness'].map(category=>({category,condition:'good',note:'Visible',timestamp:'00:10',confidence:'medium'}))}]});
  assert.equal(i.rooms.length,1);assert.equal(i.analysis.reviewRequired,true);assert.equal(i.rooms[0].items[0].aiSuggestion.reviewed,false);
+ assert.equal(i.rooms[0].evidence[0].source,'walkthrough'); assert.equal(i.rooms[0].items[0].aiSuggestion.evidenceId,i.rooms[0].evidence[0].id);
  i.rooms[0].items.forEach(item=>item.aiSuggestion.reviewed=true);
  i.signatures=[{name:'Inspector',role:'Inspector',paths:['M'],signedAt:new Date().toISOString()}];
  assert.equal(finalizationProblem(i),undefined);

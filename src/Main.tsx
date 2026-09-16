@@ -4,1890 +4,639 @@ import {
   Alert,
   Image,
   KeyboardAvoidingView,
-  Modal,
   Platform,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from "react-native";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
-import { CameraView, useCameraPermissions } from "expo-camera";
+import * as Sharing from "expo-sharing";
+import { exportReport } from "./report";
+import GuidedCapture, { WalkthroughCapture } from "./GuidedCapture";
 import {
-  Button,
-  C,
-  Card,
-  Field,
-  Icon,
-  SectionTitle,
-  styles as s,
-  Tag,
-} from "./ui";
-import {
-  compare,
-  applyPropertyScan,
   applyWalkthroughDraft,
   Condition,
   CONDITION_LABEL,
   Database,
-  demoDatabase,
   emptyDatabase,
-  Evidence,
-  finalizationProblem,
   Inspection,
   newInspection,
-  newRoom,
-  progress,
   Property,
   Room,
-  Signature,
   uid,
 } from "./model";
-import {
-  fileURI,
-  loadDatabase,
-  retainPhoto,
-  retainVideo,
-  saveDatabase,
-} from "./storage";
-import { captureModule, nativeReady } from "./native";
-import { exportFloorPlan, exportReport } from "./report";
-import { planSVG } from "./geometry";
-import FloorPlanView from "./FloorPlanView";
-import * as Sharing from "expo-sharing";
-import { File } from "expo-file-system";
-import SignaturePad from "./SignaturePad";
-import ExpoPanorama, { PanoramaViewer } from "./panorama/ExpoPanorama";
-import LevelWalkthrough from "./LevelWalkthrough";
+import { fileURI, loadDatabase, retainPhoto, retainVideo, saveDatabase } from "./storage";
 import { analyzeWalkthrough } from "./walkthroughAnalysis";
+import { Icon } from "./ui";
+import DetailCapture from "./DetailCapture";
 
-type Tab = "Overview" | "Rooms" | "Plan" | "Compare" | "Report";
-type Sheet =
-  | "panorama"
-  | "walkthrough"
-  | "originals"
-  | "viewer"
-  | "property"
-  | "inspection"
-  | "room"
-  | "item"
-  | "signature"
-  | "photo"
-  | "evidence"
-  | "rename"
-  | null;
+type Screen = "home" | "capture" | "processing" | "ready" | "report" | "room" | "item" | "details" | "history" | "photo";
+type AnalysisPhase = "Uploading your walkthrough" | "Reviewing the rooms" | "Finding condition evidence" | "Preparing your report";
+
+const conditionTone: Record<Condition, { fill: string; text: string }> = {
+  good: { fill: "#e4f7d5", text: "#317348" },
+  fair: { fill: "#fff0cc", text: "#9c681a" },
+  attention: { fill: "#ffe1da", text: "#a34736" },
+  unreviewed: { fill: "#eef1ee", text: "#69766f" },
+  na: { fill: "#e9efec", text: "#567063" },
+};
+
 export default function App() {
   return (
     <SafeAreaProvider>
-      <Main />
+      <RoomRecord />
     </SafeAreaProvider>
   );
 }
-function Main() {
-  const [db, setDB] = useState<Database>(emptyDatabase()),
-    ref = useRef(db),
-    queue = useRef(Promise.resolve());
-  const [loaded, setLoaded] = useState(false),
-    [loadError, setLoadError] = useState(""),
-    [saving, setSaving] = useState(false);
-  const [busy, setBusy] = useState(""),
-    [notice, setNotice] = useState("");
-  const [propertyId, setPropertyId] = useState<string>(),
-    [inspectionId, setInspectionId] = useState<string>(),
-    [roomId, setRoomId] = useState<string>();
-  const [tab, setTab] = useState<Tab>("Overview"),
-    [sheet, setSheet] = useState<Sheet>(null);
-  const [name, setName] = useState(""),
-    [detail, setDetail] = useState(""),
-    [condition, setCondition] = useState<Condition>("good"),
-    [itemId, setItemId] = useState<string>();
-  const [role, setRole] = useState<Signature["role"]>("Inspector"),
-    [signature, setSignature] = useState<string[]>([]),
-    [kind, setKind] = useState<Inspection["kind"]>("ingoing");
-  const [evidence, setEvidence] = useState<Evidence>(),
-    [permission, requestPermission] = useCameraPermissions();
-  const [originals, setOriginals] = useState<string[]>([]);
-  const [analysisProgress, setAnalysisProgress] = useState<number>();
-  const camera = useRef<CameraView>(null),
-    [cameraReady, setCameraReady] = useState(false),
-    busyRef = useRef(false);
+
+function RoomRecord() {
+  const [db, setDB] = useState<Database>(emptyDatabase());
+  const dbRef = useRef(db);
+  const saveQueue = useRef(Promise.resolve());
+  const [loaded, setLoaded] = useState(false);
+  const [screen, setScreen] = useState<Screen>("home");
+  const [propertyId, setPropertyId] = useState<string>();
+  const [inspectionId, setInspectionId] = useState<string>();
+  const [roomId, setRoomId] = useState<string>();
+  const [itemId, setItemId] = useState<string>();
+  const [phase, setPhase] = useState<AnalysisPhase>("Uploading your walkthrough");
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [notice, setNotice] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [address, setAddress] = useState("");
+  const [suburb, setSuburb] = useState("");
+  const [inspectionKind, setInspectionKind] = useState<Inspection["kind"]>("ingoing");
+  const [itemNote, setItemNote] = useState("");
+  const [itemCondition, setItemCondition] = useState<Condition>("unreviewed");
+
   useEffect(() => {
     loadDatabase()
-      .then((d) => {
-        ref.current = d;
-        setDB(d);
+      .then((value) => {
+        dbRef.current = value;
+        setDB(value);
         setLoaded(true);
       })
-      .catch((e) => setLoadError(String(e.message)));
+      .catch((error) => {
+        setNotice(error instanceof Error ? error.message : "Your saved reports could not be opened.");
+        setLoaded(true);
+      });
   }, []);
+
   useEffect(() => {
     if (!notice) return;
-    const timer = setTimeout(() => setNotice(""), 7000);
-    return () => clearTimeout(timer);
+    const timeout = setTimeout(() => setNotice(""), 6000);
+    return () => clearTimeout(timeout);
   }, [notice]);
-  const property = db.properties.find((p) => p.id === propertyId),
-    inspection = property?.inspections.find((i) => i.id === inspectionId),
-    room = inspection?.rooms.find((r) => r.id === roomId);
-  const baseline = property?.inspections.find(
-      (i) => i.id === inspection?.baselineId,
-    ),
-    locked = !!inspection?.finalizedAt,
-    stats = inspection ? progress(inspection) : undefined;
-  function commit(change: (d: Database) => void) {
+
+  const property = db.properties.find((candidate) => candidate.id === propertyId);
+  const inspection = property?.inspections.find((candidate) => candidate.id === inspectionId);
+  const room = inspection?.rooms.find((candidate) => candidate.id === roomId);
+  const item = room?.items.find((candidate) => candidate.id === itemId);
+
+  function commit(change: (next: Database) => void) {
     setSaving(true);
-    const pending = queue.current.then(async () => {
-      const next = JSON.parse(JSON.stringify(ref.current)) as Database;
+    const pending = saveQueue.current.then(async () => {
+      const next = JSON.parse(JSON.stringify(dbRef.current)) as Database;
       change(next);
       await saveDatabase(next);
-      ref.current = next;
+      dbRef.current = next;
       setDB(next);
     });
-    queue.current = pending.catch(() => {});
+    saveQueue.current = pending.catch(() => undefined);
     return pending.finally(() => setSaving(false));
   }
-  async function work(title: string, action: () => Promise<void>) {
-    if (busyRef.current) return;
-    busyRef.current = true;
-    setBusy(title);
-    try {
-      await action();
-    } catch (e) {
-      setNotice(e instanceof Error ? e.message : String(e));
-    } finally {
-      busyRef.current = false;
-      setBusy("");
-    }
-  }
-  function editInspection(change: (i: Inspection) => void) {
-    return commit((d) => {
-      const i = d.properties
-        .find((p) => p.id === propertyId)
-        ?.inspections.find((i) => i.id === inspectionId);
-      if (!i || i.finalizedAt)
-        throw new Error("This finalized inspection is locked.");
-      i.signatures = [];
-      change(i);
+
+  function editInspection(change: (value: Inspection) => void) {
+    return commit((next) => {
+      const target = next.properties
+        .find((candidate) => candidate.id === propertyId)
+        ?.inspections.find((candidate) => candidate.id === inspectionId);
+      if (!target) throw new Error("This inspection no longer exists.");
+      change(target);
     });
   }
-  function editRoom(change: (r: Room) => void) {
-    return editInspection((i) => {
-      const r = i.rooms.find((r) => r.id === roomId);
-      if (!r) throw new Error("Room not found.");
-      change(r);
-    });
-  }
-  function closeSheet() {
-    if (busy) return;
-    if (sheet === "panorama" || sheet === "walkthrough") {
-      Alert.alert(
-        sheet === "panorama" ? "Leave panorama capture?" : "Leave level walkthrough?",
-        sheet === "panorama"
-          ? "A panorama is attached to the room only after you tap Save panorama to this room."
-          : "The walkthrough is attached to the inspection only after you tap Complete level & attach.",
-        [
-          { text: "Keep capturing", style: "cancel" },
-          {
-            text: "Leave",
-            style: "destructive",
-            onPress: () => setSheet(null),
-          },
-        ],
-      );
-    } else setSheet(null);
-  }
-  function openSheet(next: Sheet) {
-    setName("");
-    setDetail("");
-    setSignature([]);
-    setSheet(next);
-  }
-  function selectInspection(p: Property, i: Inspection) {
-    setPropertyId(p.id);
-    setInspectionId(i.id);
-    setRoomId(undefined);
-    setTab("Overview");
-  }
-  function back() {
-    if (roomId) setRoomId(undefined);
-    else {
-      setPropertyId(undefined);
-      setInspectionId(undefined);
-    }
-  }
-  async function createProperty() {
-    const p: Property = {
+
+  async function startScan() {
+    const nextInspection = newInspection("ingoing");
+    const nextProperty: Property = {
       id: uid(),
-      address: name.trim(),
-      suburb: detail.trim(),
-      inspections: [newInspection("ingoing")],
+      address: "New inspection",
+      suburb: "",
+      inspections: [nextInspection],
     };
-    if (!p.address) throw new Error("Enter a property address.");
-    await commit((d) => {
-      d.properties.unshift(p);
-    });
-    setSheet(null);
-    selectInspection(p, p.inspections[0]);
+    await commit((next) => next.properties.unshift(nextProperty));
+    setPropertyId(nextProperty.id);
+    setInspectionId(nextInspection.id);
+    setRoomId(undefined);
+    setItemId(undefined);
+    setUploadProgress(0);
+    setScreen("capture");
   }
-  async function createInspection() {
-    if (!property) return;
-    const base = [...property.inspections]
-      .filter((i) => i.kind === "ingoing" && i.finalizedAt)
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
-    if (kind === "outgoing" && !base)
-      throw new Error(
-        "Finalize an ingoing inspection first to establish the comparison baseline.",
-      );
-    const i = newInspection(kind, kind === "outgoing" ? base : undefined);
-    await commit((d) => {
-      d.properties.find((p) => p.id === property.id)!.inspections.unshift(i);
-    });
-    setSheet(null);
-    selectInspection(property, i);
-  }
-  async function scan(mode: "plan" | "panorama") {
-    if (mode === "panorama" && !captureModule) {
-      if (Platform.OS !== "ios")
-        throw new Error(
-          "Open RoomRecord in Expo Go on your iPhone for 360° capture.",
-        );
-      setSheet("panorama");
-      return;
-    }
-    if (!captureModule || !nativeReady())
-      throw new Error(
-        "LiDAR is not available in Expo Go. You can capture 360° panoramas, detail photos and inspection reports here.",
-      );
-    if (mode === "plan") {
-      const plan = await captureModule.scanRoom();
-      await editRoom((r) => {
-        r.plan = plan;
-      });
-      setNotice("Room plan saved on this phone.");
-    } else {
-      const result = await captureModule.capturePanorama();
-      await editRoom((r) => {
-        r.evidence.push({
-          ...result,
-          id: uid(),
-          kind: "panorama",
-          caption: "Room panorama",
-        });
-      });
-      setNotice("Panorama saved. Open it to review coverage and seams.");
-    }
-  }
-  async function scanProperty() {
-    if (!inspection || !captureModule || !nativeReady())
-      throw new Error(
-        "Whole-property scanning needs the installed iPhone build.",
-      );
-    const result = await captureModule.scanProperty(
-      inspection.rooms.map(({ id, name }) => ({ id, name })),
-    );
-    await editInspection((i) => applyPropertyScan(i, result));
-    setTab("Plan");
-    setNotice(`Floor plan saved from ${result.rooms.length} room scans.`);
-  }
-  async function openCamera() {
-    const p = permission?.granted ? permission : await requestPermission();
-    if (!p.granted)
-      throw new Error(
-        "Camera access is required. Enable it in your device settings.",
-      );
-    setCameraReady(false);
-    setDetail("");
-    setSheet("photo");
-  }
-  async function takePhoto() {
-    if (!cameraReady) return;
-    const photo = await camera.current?.takePictureAsync({ quality: 0.9 });
-    if (!photo) throw new Error("Photo capture failed. Please try again.");
-    const path = await retainPhoto(photo.uri);
-    await editRoom((r) => {
-      r.evidence.push({
-        id: uid(),
-        kind: "photo",
-        path,
-        caption: detail.trim(),
-        capturedAt: new Date().toISOString(),
-      });
-    });
-    setSheet(null);
-    setNotice("Photo saved.");
-  }
-  async function saveWalkthrough(capture: {
-    uri: string;
-    capturedAt: string;
-    durationSeconds: number;
-  }) {
-    const path = await retainVideo(capture.uri);
+
+  async function receiveWalkthrough(capture: WalkthroughCapture) {
+    if (!propertyId || !inspectionId) throw new Error("Start a new inspection before recording.");
+    setScreen("processing");
+    setPhase("Uploading your walkthrough");
+    setUploadProgress(0);
+    const localPath = await retainVideo(capture.uri);
     const walkthroughId = uid();
-    await editInspection((i) => {
-      i.walkthroughs = [
-        ...(i.walkthroughs ?? []),
+    await editInspection((value) => {
+      value.walkthroughs = [
         {
           id: walkthroughId,
-          path,
+          path: localPath,
           capturedAt: capture.capturedAt,
           durationSeconds: capture.durationSeconds,
+          coverage: capture.coverage,
           status: "analyzing",
         },
+        ...(value.walkthroughs ?? []),
       ];
     });
-    if (!inspection || !property) return;
-    setAnalysisProgress(0);
+    const snapshot = dbRef.current;
+    const sourceProperty = snapshot.properties.find((candidate) => candidate.id === propertyId);
+    const sourceInspection = sourceProperty?.inspections.find((candidate) => candidate.id === inspectionId);
+    if (!sourceProperty || !sourceInspection) throw new Error("The recording could not be linked to an inspection.");
+    const baseline = sourceProperty.inspections.find((candidate) => candidate.id === sourceInspection.baselineId);
     const baselineText = baseline
       ? baseline.rooms
           .map(
-            (room) =>
-              `${room.name}: ${room.items
-                .map(
-                  (item) =>
-                    `${item.name}=${CONDITION_LABEL[item.condition]}${item.note ? ` (${item.note})` : ""}`,
-                )
+            (baselineRoom) =>
+              `${baselineRoom.name}: ${baselineRoom.items
+                .map((baselineItem) => `${baselineItem.name}=${CONDITION_LABEL[baselineItem.condition]}${baselineItem.note ? ` (${baselineItem.note})` : ""}`)
                 .join("; ")}`,
           )
           .join("\n")
       : "";
     try {
       const draft = await analyzeWalkthrough(
-        fileURI(path),
+        fileURI(localPath),
         {
-          kind: inspection.kind,
-          property: `${property.address}${property.suburb ? `, ${property.suburb}` : ""}`,
+          kind: sourceInspection.kind,
+          property: sourceProperty.address,
           baseline: baselineText,
         },
-        setAnalysisProgress,
+        (fraction) => {
+          setUploadProgress(fraction);
+          if (fraction >= 0.98) setPhase("Reviewing the rooms");
+        },
       );
-      await editInspection((i) => {
-        applyWalkthroughDraft(i, draft);
-        const walkthrough = i.walkthroughs?.find((item) => item.id === walkthroughId);
-        if (walkthrough) {
-          walkthrough.status = "analyzed";
-          walkthrough.analyzedAt = new Date().toISOString();
-          walkthrough.error = undefined;
+      setPhase("Preparing your report");
+      await editInspection((value) => {
+        applyWalkthroughDraft(value, draft);
+        const saved = value.walkthroughs?.find((candidate) => candidate.id === walkthroughId);
+        if (saved) {
+          saved.status = "analyzed";
+          saved.analyzedAt = new Date().toISOString();
+          saved.error = undefined;
         }
       });
-      setSheet(null);
-      setNotice("AI draft created. Review each suggested condition before signing.");
+      setScreen("ready");
     } catch (error) {
-      await editInspection((i) => {
-        const walkthrough = i.walkthroughs?.find((item) => item.id === walkthroughId);
-        if (walkthrough) {
-          walkthrough.status = "failed";
-          walkthrough.error = error instanceof Error ? error.message : String(error);
+      await editInspection((value) => {
+        const saved = value.walkthroughs?.find((candidate) => candidate.id === walkthroughId);
+        if (saved) {
+          saved.status = "failed";
+          saved.error = error instanceof Error ? error.message : String(error);
         }
       });
-      throw error;
-    } finally {
-      setAnalysisProgress(undefined);
+      setNotice(error instanceof Error ? error.message : "Your recording could not be analysed.");
+      setScreen("ready");
     }
   }
-  async function addSignature() {
-    if (!name.trim() || !signature.length)
-      throw new Error("Enter your name and draw a signature.");
-    await commit((d) => {
-      const i = d.properties
-        .find((p) => p.id === propertyId)
-        ?.inspections.find((i) => i.id === inspectionId);
-      if (!i || i.finalizedAt) throw new Error("This inspection is locked.");
-      i.signatures = [
-        ...i.signatures.filter((s) => s.role !== role),
-        {
-          name: name.trim(),
-          role,
-          paths: signature,
-          signedAt: new Date().toISOString(),
-        },
-      ];
-    });
-    setSheet(null);
+
+  function openReport(nextProperty: Property, nextInspection: Inspection) {
+    setPropertyId(nextProperty.id);
+    setInspectionId(nextInspection.id);
+    setRoomId(undefined);
+    setItemId(undefined);
+    setScreen("report");
   }
-  async function finalize() {
-    if (!inspection) return;
-    const problem = finalizationProblem(inspection);
-    if (problem) throw new Error(problem);
-    const yes =
-      Platform.OS === "web"
-        ? window.confirm(
-            "Finalize this inspection? Its records will become read-only.",
-          )
-        : await new Promise<boolean>((resolve) =>
-            Alert.alert(
-              "Finalize inspection?",
-              "Its records will become read-only. Export the report to retain a copy outside this phone.",
-              [
-                {
-                  text: "Cancel",
-                  style: "cancel",
-                  onPress: () => resolve(false),
-                },
-                { text: "Finalize", onPress: () => resolve(true) },
-              ],
-              { cancelable: true, onDismiss: () => resolve(false) },
-            ),
-          );
-    if (!yes) return;
-    await commit((d) => {
-      const i = d.properties
-        .find((p) => p.id === propertyId)!
-        .inspections.find((i) => i.id === inspectionId)!;
-      const err = finalizationProblem(i);
-      if (err) throw new Error(err);
-      i.finalizedAt = new Date().toISOString();
-    });
-    setNotice("Inspection finalized.");
+
+  function openDetails() {
+    if (!property || !inspection) return;
+    setAddress(property.address === "New inspection" ? "" : property.address);
+    setSuburb(property.suburb);
+    setInspectionKind(inspection.kind);
+    setScreen("details");
   }
-  if (loadError)
-    return (
-      <SafeAreaView style={s.app}>
-        <View style={s.content}>
-          <Text style={s.title}>Your records need attention.</Text>
-          <Text style={s.body}>{loadError}</Text>
-          <Text style={s.body}>
-            Existing data has not been overwritten. Close and reopen the app, or
-            retain the app data for recovery.
-          </Text>
-        </View>
-      </SafeAreaView>
-    );
+
+  async function saveDetails() {
+    if (!address.trim()) {
+      setNotice("Add the property address before saving the report.");
+      return;
+    }
+    await commit((next) => {
+      const targetProperty = next.properties.find((candidate) => candidate.id === propertyId);
+      const targetInspection = targetProperty?.inspections.find((candidate) => candidate.id === inspectionId);
+      if (!targetProperty || !targetInspection) throw new Error("This report could not be found.");
+      targetProperty.address = address.trim();
+      targetProperty.suburb = suburb.trim();
+      targetInspection.kind = inspectionKind;
+    });
+    setScreen("report");
+  }
+
+  function openRoom(nextRoom: Room) {
+    setRoomId(nextRoom.id);
+    setScreen("room");
+  }
+
+  function openItem(nextId: string) {
+    const current = room?.items.find((candidate) => candidate.id === nextId);
+    if (!current) return;
+    setItemId(nextId);
+    setItemNote(current.note);
+    setItemCondition(current.condition);
+    setScreen("item");
+  }
+
+  async function saveItem() {
+    if (!roomId || !itemId) return;
+    await editInspection((value) => {
+      const targetRoom = value.rooms.find((candidate) => candidate.id === roomId);
+      const targetItem = targetRoom?.items.find((candidate) => candidate.id === itemId);
+      if (!targetItem) throw new Error("This report item could not be found.");
+      targetItem.note = itemNote.trim();
+      targetItem.condition = itemCondition;
+      if (targetItem.aiSuggestion) targetItem.aiSuggestion.reviewed = true;
+    });
+    setScreen("room");
+  }
+
+  async function addCloseUp(uri: string) {
+    if (!roomId) return;
+    const path = await retainPhoto(uri);
+    await editInspection((value) => {
+      const target = value.rooms.find((candidate) => candidate.id === roomId);
+      if (!target) throw new Error("This room could not be found.");
+      target.evidence.unshift({
+        id: uid(),
+        kind: "photo",
+        path,
+        source: "manual",
+        capturedAt: new Date().toISOString(),
+        caption: "Inspector close-up",
+      });
+    });
+    setScreen("room");
+  }
+
+  async function shareReport() {
+    if (!property || !inspection) return;
+    if (property.address === "New inspection") {
+      setNotice("Add property details before sharing the report.");
+      setScreen("details");
+      return;
+    }
+    await exportReport(property, inspection, "Share inspection report");
+  }
+
+  async function savePDF() {
+    if (!property || !inspection) return;
+    if (property.address === "New inspection") {
+      setNotice("Add property details before saving the report.");
+      setScreen("details");
+      return;
+    }
+    if (!(await Sharing.isAvailableAsync())) {
+      setNotice("Saving to Files is not available on this device.");
+      return;
+    }
+    await exportReport(property, inspection, "Save inspection PDF to Files");
+  }
+
+  function returnHome() {
+    setPropertyId(undefined);
+    setInspectionId(undefined);
+    setRoomId(undefined);
+    setItemId(undefined);
+    setScreen("home");
+  }
+
+  async function abandonCapture() {
+    const unfinished = dbRef.current.properties.find((candidate) => candidate.id === propertyId);
+    const draft = unfinished?.inspections.find((candidate) => candidate.id === inspectionId);
+    if (
+      unfinished?.address === "New inspection" &&
+      draft &&
+      !draft.analysis &&
+      !(draft.walkthroughs ?? []).length
+    ) {
+      await commit((next) => {
+        next.properties = next.properties.filter((candidate) => candidate.id !== propertyId);
+      });
+    }
+    returnHome();
+  }
+
   if (!loaded)
     return (
-      <SafeAreaView style={[s.app, { justifyContent: "center" }]}>
-        <ActivityIndicator color={C.green} />
+      <SafeAreaView style={styles.loading}>
+        <StatusBar style="dark" />
+        <ActivityIndicator color="#23684d" />
       </SafeAreaView>
     );
+
+  if (screen === "capture")
+    return (
+      <SafeAreaView style={styles.captureSafe} edges={["top", "bottom"]}>
+        <StatusBar style="light" />
+        <GuidedCapture onComplete={receiveWalkthrough} onExit={() => void abandonCapture()} />
+      </SafeAreaView>
+    );
+
   return (
-    <SafeAreaView style={s.app} edges={["top", "bottom"]}>
+    <SafeAreaView style={styles.app} edges={["top", "bottom"]}>
       <StatusBar style="dark" />
-      <View style={l.header}>
-        <View style={s.row}>
-          {inspection ? (
-            <Pressable
-              accessibilityLabel="Go back"
-              onPress={back}
-              style={l.iconButton}
-            >
-              <Icon name="back" />
-            </Pressable>
-          ) : (
-            <View style={l.logo}>
-              <Icon name="scan" color="white" size={21} />
-            </View>
-          )}
-          <Text style={l.wordmark}>
-            roomrecord<Text style={{ color: "#90a17f" }}>.</Text>
-          </Text>
-        </View>
-        <View style={s.row}>
-          <View
-            style={[l.dot, { backgroundColor: saving ? C.amber : C.green }]}
-          />
-          <Text style={{ color: C.muted, fontSize: 11 }}>
-            {saving ? "Saving" : "On this phone · 0.4.0"}
-          </Text>
-        </View>
-      </View>
       {!!notice && (
-        <Pressable onPress={() => setNotice("")} style={l.notice}>
-          <Text style={{ color: C.ink, flex: 1, fontSize: 13, lineHeight: 18 }}>
-            {notice}
-          </Text>
-          <Icon name="close" size={16} />
+        <Pressable accessibilityRole="alert" onPress={() => setNotice("")} style={styles.notice}>
+          <Icon name="warning" color="#9c681a" size={18} />
+          <Text style={styles.noticeText}>{notice}</Text>
+          <Icon name="close" color="#607066" size={16} />
         </Pressable>
       )}
-      {!!busy && (
-        <View style={l.busy}>
-          <ActivityIndicator size="small" color={C.green} />
-          <Text style={s.label}>{busy}</Text>
-        </View>
-      )}
-      <ScrollView
-        keyboardShouldPersistTaps="handled"
-        contentContainerStyle={s.content}
-      >
-        {!inspection && (
-          <>
-            <View style={{ gap: 8 }}>
-              <Text style={s.eyebrow}>
-                PROPERTY INSPECTIONS, IN PERSPECTIVE
-              </Text>
-              <Text style={s.title}>Every room.{"\n"}The whole picture.</Text>
-              <Text style={s.body}>
-                Capture the condition. Keep the record.
-              </Text>
-            </View>
-            <View style={l.hero}>
-              <View style={{ flex: 1, gap: 13 }}>
-                <View style={l.heroBadge}>
-                  <Text
-                    style={{
-                      color: C.lime,
-                      fontSize: 10,
-                      fontWeight: "700",
-                      letterSpacing: 1,
-                    }}
-                  >
-                    PHONE-ONLY CAPTURE
-                  </Text>
-                </View>
-                <Text
-                  style={{
-                    fontSize: 24,
-                    fontWeight: "500",
-                    color: "white",
-                    lineHeight: 29,
-                  }}
-                >
-                  A clearer view{"\n"}of every property.
-                </Text>
-                <Text
-                  style={{ color: "#b7cbbf", fontSize: 12, lineHeight: 18 }}
-                >
-                  360° capture + inspection reports
-                </Text>
-              </View>
-              <View style={l.heroIllustration}>
-                <Icon name="plan" size={85} color={C.lime} />
-                <View style={l.scanBadge}>
-                  <Icon name="scan" size={23} color={C.ink} />
-                </View>
-              </View>
-            </View>
-            <View style={l.stats}>
-              <Stat value={String(db.properties.length)} label="Properties" />
-              <Stat
-                value={String(
-                  db.properties
-                    .flatMap((p) => p.inspections)
-                    .filter((i) => !i.finalizedAt).length,
-                )}
-                label="In progress"
-              />
-              <Stat
-                value={String(
-                  db.properties
-                    .flatMap((p) => p.inspections)
-                    .filter((i) => i.finalizedAt).length,
-                )}
-                label="Finalized"
-              />
-            </View>
-            <SectionTitle
-              title="Your properties"
-              right="+ Add property"
-              onPress={() => openSheet("property")}
-            />
-            {!db.properties.length ? (
-              <Card>
-                <Icon name="home" size={30} />
-                <Text style={s.h2}>Start with your first property</Text>
-                <Text style={s.body}>
-                  Add an address to start an ingoing inspection. Rooms and
-                  checklists are ready to customize.
-                </Text>
-                <Button
-                  title="Add a property"
-                  icon="plus"
-                  onPress={() => openSheet("property")}
-                />
-                <Button
-                  secondary
-                  title="Explore a sample inspection"
-                  onPress={() =>
-                    work("Loading sample…", async () => {
-                      await commit((d) => {
-                        d.properties.push(...demoDatabase().properties);
-                      });
-                    })
-                  }
-                />
-              </Card>
-            ) : (
-              db.properties.map((p) => (
-                <Card key={p.id}>
-                  <Pressable
-                    accessibilityRole="button"
-                    onPress={() => selectInspection(p, p.inspections[0])}
-                    style={s.between}
-                  >
-                    <View style={[s.row, { flex: 1 }]}>
-                      <View style={l.propertyIcon}>
-                        <Icon name="home" />
-                      </View>
-                      <View style={{ flex: 1, gap: 5 }}>
-                        <Text style={[s.h2, { fontSize: 17 }]}>
-                          {p.address}
-                        </Text>
-                        <Text style={[s.body, { fontSize: 12 }]}>
-                          {p.suburb || "Property record"}
-                        </Text>
-                      </View>
-                    </View>
-                    <Icon name="chevron" size={17} />
-                  </Pressable>
-                  <View style={s.divider} />
-                  {p.inspections.slice(0, 3).map((i) => (
-                    <Pressable
-                      key={i.id}
-                      accessibilityRole="button"
-                      onPress={() => selectInspection(p, i)}
-                      style={s.between}
-                    >
-                      <Text style={s.label}>
-                        {i.kind === "ingoing" ? "Ingoing" : "Outgoing"} ·{" "}
-                        {new Date(i.createdAt).toLocaleDateString()}
-                      </Text>
-                      <Tag
-                        text={
-                          i.finalizedAt
-                            ? "Finalized"
-                            : `${progress(i).percent}% reviewed`
-                        }
-                        amber={!i.finalizedAt}
-                      />
-                    </Pressable>
-                  ))}
-                  <Button
-                    secondary
-                    title="New inspection"
-                    icon="plus"
-                    onPress={() => {
-                      setPropertyId(p.id);
-                      setKind("outgoing");
-                      openSheet("inspection");
-                    }}
-                  />
-                </Card>
-              ))
-            )}
-            <View style={[s.row, { alignItems: "flex-start" }]}>
-              <Icon name="shield" color={C.muted} size={20} />
-              <Text style={[s.body, { flex: 1, fontSize: 12 }]}>
-                Inspection records stay on this device. Walkthrough videos are
-                temporarily uploaded only when you request an AI draft, then the
-                analysis upload is deleted. Export reports to retain a copy.
-              </Text>
-            </View>
-          </>
-        )}
-        {!!inspection && !!property && !room && (
-          <>
-            <View style={{ gap: 9 }}>
-              <View style={s.between}>
-                <Text style={s.eyebrow}>
-                  {inspection.kind.toUpperCase()} INSPECTION
-                </Text>
-                <Tag
-                  text={locked ? "Finalized" : "In progress"}
-                  amber={!locked}
-                />
-              </View>
-              <Text style={s.title}>{property.address}</Text>
-              <Text style={s.body}>
-                {property.suburb} ·{" "}
-                {new Date(inspection.createdAt).toLocaleDateString()}
-              </Text>
-            </View>
-            {tab === "Overview" && (
-              <>
-                <Card
-                  style={{ backgroundColor: "#eaf0e2", borderColor: "#dce5ce" }}
-                >
-                  <View style={s.between}>
-                    <View>
-                      <Text style={s.eyebrow}>INSPECTION PROGRESS</Text>
-                      <Text style={[s.title, { marginTop: 6 }]}>
-                        {stats!.percent}
-                        <Text style={{ fontSize: 21 }}>%</Text>
-                      </Text>
-                    </View>
-                    <View style={l.progressIcon}>
-                      <Icon
-                        name={locked ? "check" : "scan"}
-                        size={38}
-                        color={C.green}
-                      />
-                    </View>
-                  </View>
-                  <View style={l.track}>
-                    <View style={[l.fill, { width: `${stats!.percent}%` }]} />
-                  </View>
-                  <Text style={s.body}>
-                    {stats!.done} of {stats!.total} condition items reviewed
-                  </Text>
-                </Card>
-                <View style={l.stats}>
-                  <Stat value={String(inspection.rooms.length)} label="Rooms" />
-                  <Stat
-                    value={String(
-                      inspection.rooms.flatMap((r) => r.evidence).length,
-                    )}
-                    label="Captures"
-                  />
-                  <Stat value={String(stats!.issues)} label="Need attention" />
-                </View>
-                <Card style={{ backgroundColor: "#eaf0e2", borderColor: "#dce5ce" }}>
-                  <View style={s.between}>
-                    <View style={{ flex: 1, gap: 4 }}>
-                      <Text style={s.eyebrow}>WHOLE-LEVEL EVIDENCE</Text>
-                      <Text style={s.h2}>One continuous walkthrough</Text>
-                    </View>
-                    <Icon name="camera" color={C.green} size={28} />
-                  </View>
-                  <Text style={s.body}>
-                    Record the entire level once. The video is uploaded for AI
-                    analysis, then becomes a room-by-room draft that you review
-                    before it can be signed or exported.
-                  </Text>
-                  {(inspection.walkthroughs ?? []).length ? (
-                    <Text style={s.body}>
-                      {(inspection.walkthroughs ?? []).length} walkthrough
-                      {(inspection.walkthroughs ?? []).length === 1 ? "" : "s"}{" "}
-                      · latest {new Date((inspection.walkthroughs ?? [])[0].capturedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} · {((inspection.walkthroughs ?? [])[0].status ?? "captured") === "analyzing" ? "analysing" : ((inspection.walkthroughs ?? [])[0].status ?? "captured")}
-                    </Text>
-                  ) : null}
-                  {inspection.analysis && (
-                    <View style={{ gap: 7 }}>
-                      <Tag text={`AI DRAFT · ${inspection.analysis.confidence} confidence`} amber />
-                      <Text style={s.body}>{inspection.analysis.summary}</Text>
-                      {inspection.analysis.coverageWarnings.map((warning) => (
-                        <Text key={warning} style={s.body}>• {warning}</Text>
-                      ))}
-                    </View>
-                  )}
-                  {!locked && (
-                    <Button
-                      title={inspection.analysis ? "Record & re-analyse walkthrough" : "Record & analyse walkthrough"}
-                      icon="camera"
-                      disabled={!!busy}
-                      onPress={() =>
-                        work("Opening walkthrough camera…", async () => {
-                          setSheet("walkthrough");
-                        })
-                      }
-                    />
-                  )}
-                </Card>
-                <SectionTitle title="Next steps" />
-                <Task
-                  icon="check"
-                  title="Review the AI draft"
-                  body="Confirm every suggested condition and add detail photos where needed."
-                  onPress={() => setTab("Rooms")}
-                />
-                <Task
-                  icon="home"
-                  title="Review each room"
-                  body="Record condition and capture the details."
-                  onPress={() => setTab("Rooms")}
-                />
-                <Task
-                  icon="compare"
-                  title="Compare entry and exit"
-                  body={
-                    baseline
-                      ? "Your ingoing baseline is linked."
-                      : "Comparison is available for outgoing inspections."
-                  }
-                  onPress={() => setTab("Compare")}
-                />
-                <Task
-                  icon="report"
-                  title="Review and export"
-                  body="Sign the record and export a PDF."
-                  onPress={() => setTab("Report")}
-                />
-                <Button
-                  secondary
-                  title="New inspection for this property"
-                  icon="plus"
-                  onPress={() => {
-                    setKind("outgoing");
-                    openSheet("inspection");
-                  }}
-                />
-              </>
-            )}
-            {tab === "Plan" && (
-              <>
-                <SectionTitle title="Coverage and floor plan" />
-                <Text style={s.body}>
-                  A walkthrough video creates an inspection draft, not a measured
-                  floor plan. It cannot reliably infer room dimensions, walls or
-                  boundaries. Add a verified plan separately if your report needs
-                  one.
-                </Text>
-                {inspection.propertyPlan ? (
-                  <>
-                    <FloorPlanView
-                      plan={{
-                        ...inspection.propertyPlan,
-                        labels: inspection.propertyPlan.labels?.map(
-                          (label) => ({
-                            ...label,
-                            name:
-                              inspection.rooms.find(
-                                (r) => r.id === label.roomId,
-                              )?.name ?? label.name,
-                          }),
-                        ),
-                      }}
-                      name="Property"
-                    />
-                    <Text style={s.body}>
-                      {inspection.propertyPlan.roomCount} scanned rooms ·
-                      dimensions in metres. Verify critical measurements.
-                    </Text>
-                    {!!inspection.propertyPlan.exportWarning && (
-                      <Text style={s.body}>
-                        {inspection.propertyPlan.exportWarning}
-                      </Text>
-                    )}
-                    <Button
-                      secondary
-                      title="Export property floor plan"
-                      icon="plan"
-                      onPress={() =>
-                        work("Exporting floor plan…", () =>
-                          exportFloorPlan(
-                            planSVG(
-                              {
-                                ...inspection.propertyPlan!,
-                                labels: inspection.propertyPlan!.labels?.map(
-                                  (label) => ({
-                                    ...label,
-                                    name:
-                                      inspection.rooms.find(
-                                        (r) => r.id === label.roomId,
-                                      )?.name ?? label.name,
-                                  }),
-                                ),
-                              },
-                              property.address,
-                            ),
-                          ),
-                        )
-                      }
-                    />
-                  </>
-                ) : (
-                  <Card>
-                    <Icon name="camera" size={40} />
-                    <Text style={s.h2}>Walkthrough coverage</Text>
-                    <Text style={s.body}>
-                      Record slowly through every room, open cupboards or areas
-                      that matter, and capture detail photos for marks or damage.
-                      The AI will mark anything it cannot clearly see as Not
-                      reviewed rather than guessing.
-                    </Text>
-                  </Card>
-                )}
-              </>
-            )}
-            {tab === "Rooms" && (
-              <>
-                <SectionTitle
-                  title="Room checklist"
-                  right={locked ? undefined : "+ Add room"}
-                  onPress={() => openSheet("room")}
-                />
-                {inspection.rooms.map((r, n) => {
-                  const done = r.items.filter(
-                    (i) => i.condition !== "unreviewed",
-                  ).length;
-                  return (
-                    <Pressable
-                      accessibilityRole="button"
-                      key={r.id}
-                      onPress={() => setRoomId(r.id)}
-                    >
-                      <Card>
-                        <View style={s.between}>
-                          <View style={[s.row, { flex: 1 }]}>
-                            <View style={l.roomNumber}>
-                              <Text
-                                style={{
-                                  color: C.green,
-                                  fontSize: 13,
-                                  fontWeight: "600",
-                                }}
-                              >
-                                {String(n + 1).padStart(2, "0")}
-                              </Text>
-                            </View>
-                            <View style={{ gap: 5, flex: 1 }}>
-                              <Text style={s.h2}>{r.name}</Text>
-                              <Text style={[s.body, { fontSize: 12 }]}>
-                                {done}/{r.items.length} reviewed ·{" "}
-                                {r.evidence.length} captures
-                              </Text>
-                            </View>
-                          </View>
-                          <Icon
-                            name={done === r.items.length ? "check" : "chevron"}
-                            color={done === r.items.length ? C.green : C.muted}
-                          />
-                        </View>
-                        <View style={s.row}>
-                          {r.plan && <Tag text="LiDAR plan" />}
-                          {r.evidence.some((e) => e.kind === "panorama") && (
-                            <Tag text="360° panorama" />
-                          )}
-                          {r.items.some((i) => i.condition === "attention") && (
-                            <Tag text="Needs attention" amber />
-                          )}
-                        </View>
-                      </Card>
-                    </Pressable>
-                  );
-                })}
-              </>
-            )}
-            {tab === "Compare" && (
-              <>
-                <SectionTitle title="Ingoing → outgoing" />
-                {!baseline ? (
-                  <Card>
-                    <Icon name="compare" size={32} />
-                    <Text style={s.h2}>A baseline comes first</Text>
-                    <Text style={s.body}>
-                      Finish and finalize an ingoing inspection. Create an
-                      outgoing inspection for the same property to compare
-                      matching rooms and items.
-                    </Text>
-                  </Card>
-                ) : (
-                  <>
-                    <Text style={s.body}>
-                      Compared with{" "}
-                      {new Date(baseline.createdAt).toLocaleDateString()}.
-                      Condition changes are observations for review.
-                    </Text>
-                    {inspection.rooms.map((r) => (
-                      <Card key={r.id}>
-                        <Text style={s.h2}>{r.name}</Text>
-                        {r.items.map((item) => {
-                          const before = baseline.rooms
-                            .find((b) => b.id === r.id)
-                            ?.items.find((i) => i.id === item.id);
-                          return (
-                            <View key={item.id} style={{ gap: 7 }}>
-                              <Text style={s.label}>{item.name}</Text>
-                              <View style={s.between}>
-                                <Text style={[s.body, { flex: 1 }]}>
-                                  {before
-                                    ? CONDITION_LABEL[before.condition]
-                                    : "No baseline"}
-                                </Text>
-                                <Icon name="arrow" size={16} color={C.muted} />
-                                <View
-                                  style={{ flex: 1, alignItems: "flex-end" }}
-                                >
-                                  <Tag
-                                    text={CONDITION_LABEL[item.condition]}
-                                    amber={
-                                      !!before &&
-                                      before.condition !== item.condition &&
-                                      item.condition !== "unreviewed"
-                                    }
-                                  />
-                                </View>
-                              </View>
-                              {item.note ? (
-                                <Text style={s.body}>{item.note}</Text>
-                              ) : null}
-                            </View>
-                          );
-                        })}
-                        <View style={s.divider} />
-                        <View style={s.row}>
-                          {[baseline.rooms.find((b) => b.id === r.id), r].map(
-                            (version, n) => (
-                              <View key={n} style={{ flex: 1, gap: 7 }}>
-                                <Text style={s.eyebrow}>
-                                  {n ? "OUTGOING" : "INGOING"}
-                                </Text>
-                                {version?.evidence[0] ? (
-                                  <Pressable
-                                    onPress={() => {
-                                      setEvidence(version.evidence[0]);
-                                      setSheet("evidence");
-                                    }}
-                                  >
-                                    <Image
-                                      source={{
-                                        uri: fileURI(version.evidence[0].path),
-                                      }}
-                                      style={{ height: 95, borderRadius: 10 }}
-                                    />
-                                  </Pressable>
-                                ) : (
-                                  <Text style={s.body}>No image</Text>
-                                )}
-                              </View>
-                            ),
-                          )}
-                        </View>
-                      </Card>
-                    ))}
-                  </>
-                )}
-              </>
-            )}
-            {tab === "Report" && (
-              <>
-                <Card>
-                  <View style={s.row}>
-                    <View style={l.propertyIcon}>
-                      <Icon name="report" />
-                    </View>
-                    <View>
-                      <Text style={s.h2}>Condition report</Text>
-                      <Text style={s.body}>
-                        {locked
-                          ? "Finalized record"
-                          : "Draft · review before signing"}
-                      </Text>
-                    </View>
-                  </View>
-                  <Text style={s.body}>
-                    Includes condition items, notes, captured photos and recorded
-                    signatures. AI walkthrough suggestions remain a draft until you
-                    open and save each item after review.
-                  </Text>
-                  <Button
-                    title="Export PDF report"
-                    icon="report"
-                    disabled={!!busy}
-                    onPress={() =>
-                      work("Preparing PDF…", () =>
-                        exportReport(property, inspection),
-                      )
-                    }
-                  />
-                </Card>
-                <SectionTitle
-                  title="Signatures"
-                  right={locked ? undefined : "+ Add signature"}
-                  onPress={() => openSheet("signature")}
-                />
-                {!inspection.signatures.length && (
-                  <Text style={s.body}>
-                    No signatures yet. Any later edits clear signatures so the
-                    report can be signed again.
-                  </Text>
-                )}
-                {inspection.signatures.map((sig) => (
-                  <Card key={sig.role}>
-                    <View style={s.between}>
-                      <View>
-                        <Text style={s.h2}>{sig.name}</Text>
-                        <Text style={s.body}>
-                          {sig.role} ·{" "}
-                          {new Date(sig.signedAt).toLocaleDateString()}
-                        </Text>
-                      </View>
-                      <Icon name="check" color={C.green} />
-                    </View>
-                  </Card>
-                ))}
-                {!locked && (
-                  <>
-                    <Text style={s.body}>
-                      Finalizing makes the inspection read-only. Every condition
-                      item must be reviewed and an inspector signature recorded.
-                    </Text>
-                    <Button
-                      title="Finalize inspection"
-                      icon="shield"
-                      disabled={!!busy}
-                      onPress={() => work("Finalizing…", finalize)}
-                    />
-                  </>
-                )}
-              </>
-            )}
-          </>
-        )}
-        {!!room && !!inspection && (
-          <>
-            <View style={{ gap: 8 }}>
-              <View style={s.between}>
-                <Text style={s.eyebrow}>
-                  {inspection.kind.toUpperCase()} / ROOM RECORD
-                </Text>
-                {locked && <Tag text="Read-only" />}
-              </View>
-              <View style={s.between}>
-                <Text style={[s.title, { flex: 1 }]}>{room.name}</Text>
-                {!locked && (
-                  <Pressable
-                    accessibilityLabel="Rename room"
-                    onPress={() => {
-                      setName(room.name);
-                      setSheet("rename");
-                    }}
-                  >
-                    <Icon name="edit" />
-                  </Pressable>
-                )}
-              </View>
-              <Text style={s.body}>
-                Capture the whole room, then the details.
-              </Text>
-            </View>
-            {!locked && (
-              <View style={s.row}>
-                <Pressable
-                  accessibilityRole="button"
-                  style={l.captureTile}
-                  onPress={() =>
-                    work("Opening panorama…", () => scan("panorama"))
-                  }
-                >
-                  <Icon name="globe" color={C.green} size={28} />
-                  <Text style={s.label}>360° panorama</Text>
-                  <Text style={l.small}>Guided phone capture</Text>
-                </Pressable>
-                <Pressable
-                  accessibilityRole="button"
-                  style={l.captureTile}
-                  onPress={() => work("Opening LiDAR…", () => scan("plan"))}
-                >
-                  <Icon name="scan" color={C.green} size={28} />
-                  <Text style={s.label}>
-                    {room.plan ? "Rescan room" : "Scan room"}
-                  </Text>
-                  <Text style={l.small}>
-                    {nativeReady()
-                      ? "LiDAR floor plan"
-                      : "Not available in Expo Go"}
-                  </Text>
-                </Pressable>
-              </View>
-            )}
-            <SectionTitle title="Condition checklist" />
-            <Card>
-              {room.items.map((item, n) => (
-                <React.Fragment key={item.id}>
-                  {n > 0 && <View style={s.divider} />}
-                  <Pressable
-                    disabled={locked}
-                    accessibilityRole="button"
-                    onPress={() => {
-                      setItemId(item.id);
-                      setName(item.name);
-                      setDetail(item.note);
-                      setCondition(item.condition);
-                      setSheet("item");
-                    }}
-                    style={{ gap: 9 }}
-                  >
-                    <View style={s.between}>
-                      <Text style={[s.label, { flex: 1, fontSize: 14 }]}>
-                        {item.name}
-                      </Text>
-                      <Tag
-                        text={CONDITION_LABEL[item.condition]}
-                        amber={
-                          item.condition === "attention" ||
-                          item.condition === "unreviewed"
-                        }
-                      />
-                    </View>
-                    {!!item.note && <Text style={s.body}>{item.note}</Text>}
-                  </Pressable>
-                </React.Fragment>
-              ))}
-            </Card>
-            <SectionTitle
-              title="Room evidence"
-              right={locked ? undefined : "+ Take photo"}
-              onPress={() => work("Opening camera…", openCamera)}
-            />
-            {!room.evidence.length ? (
-              <Card>
-                <View style={s.row}>
-                  <Icon name="camera" color={C.muted} />
-                  <Text style={[s.body, { flex: 1 }]}>
-                    Add a panorama for context and close-ups for marks, wear or
-                    damage.
-                  </Text>
-                </View>
-                {!locked && (
-                  <Button
-                    secondary
-                    title="Take a detail photo"
-                    icon="camera"
-                    onPress={() => work("Opening camera…", openCamera)}
-                  />
-                )}
-              </Card>
-            ) : (
-              <View style={{ flexDirection: "row", gap: 12, flexWrap: "wrap" }}>
-                {room.evidence.map((e) => (
-                  <Pressable
-                    key={e.id}
-                    accessibilityLabel={e.caption || "Open evidence"}
-                    onPress={() => {
-                      setEvidence(e);
-                      setDetail(e.caption);
-                      setSheet("evidence");
-                    }}
-                    style={{ width: "47%", gap: 8 }}
-                  >
-                    <Image
-                      source={{ uri: fileURI(e.path) }}
-                      style={{
-                        height: 125,
-                        borderRadius: 13,
-                        backgroundColor: C.line,
-                      }}
-                    />
-                    <Text style={s.label}>
-                      {e.kind === "panorama"
-                        ? "360° panorama"
-                        : e.caption || "Detail photo"}
-                    </Text>
-                    <Text style={l.small}>
-                      {new Date(e.capturedAt).toLocaleTimeString([], {
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      })}
-                    </Text>
-                  </Pressable>
-                ))}
-              </View>
-            )}
-            <SectionTitle title="Floor plan" />
-            {room.plan ? (
-              <>
-                <FloorPlanView plan={room.plan} name={room.name} />
-                <Text style={s.body}>
-                  Scan-derived dimensions. Verify critical measurements. Each
-                  room uses its own scan coordinates.
-                </Text>
-                <Button
-                  secondary
-                  title="Export room plan (SVG)"
-                  icon="plan"
-                  onPress={() =>
-                    work("Exporting plan…", () =>
-                      exportFloorPlan(planSVG(room.plan!, room.name)),
-                    )
-                  }
-                />
-              </>
-            ) : (
-              <Card>
-                <Icon name="plan" color={C.muted} size={30} />
-                <Text style={s.body}>
-                  Scan the room to generate a measured outline with walls, doors
-                  and windows.
-                </Text>
-              </Card>
-            )}
-          </>
-        )}
-      </ScrollView>
-      {!!inspection && !room && (
-        <View style={l.nav}>
-          {(["Overview", "Rooms", "Plan", "Compare", "Report"] as Tab[]).map(
-            (t, n) => (
-              <Pressable
-                key={t}
-                accessibilityRole="tab"
-                accessibilityState={{ selected: tab === t }}
-                onPress={() => setTab(t)}
-                style={l.navItem}
-              >
-                <Icon
-                  name={["home", "home", "plan", "compare", "report"][n]}
-                  color={tab === t ? C.green : C.muted}
-                />
-                <Text
-                  style={{
-                    fontSize: 10,
-                    color: tab === t ? C.green : C.muted,
-                    fontWeight: tab === t ? "700" : "400",
-                  }}
-                >
-                  {t}
-                </Text>
-              </Pressable>
-            ),
-          )}
-        </View>
-      )}
-      <Modal
-        visible={!!sheet}
-        animationType="slide"
-        presentationStyle="fullScreen"
-        onRequestClose={closeSheet}
-      >
-        <SafeAreaView style={s.app}>
-          <KeyboardAvoidingView
-            behavior={Platform.OS === "ios" ? "padding" : undefined}
-            style={{ flex: 1 }}
-          >
-            <View style={l.header}>
-              <Text style={[s.h2, { flex: 1 }]}>
-                {
-                  (
-                    {
-                      property: "Add property",
-                      inspection: "New inspection",
-                      room: "Add room",
-                      rename: "Room name",
-                      item: name,
-                      signature: "Sign inspection",
-                      photo: "Detail photo",
-                      panorama: "Capture 360°",
-                      walkthrough: "Full-level walkthrough",
-                      viewer: "Explore 360°",
-                      originals: "Original capture photos",
-                      evidence: "Room evidence",
-                    } as Record<string, string>
-                  )[sheet || ""]
-                }
-              </Text>
-              <Pressable
-                accessibilityLabel="Close capture"
-                accessibilityHint="Exit this screen without saving a capture"
-                disabled={!!busy}
-                onPress={closeSheet}
-                hitSlop={12}
-                style={l.closeButton}
-              >
-                <Icon name="close" />
-                <Text style={l.closeText}>Close</Text>
-              </Pressable>
-            </View>
-            {!!notice && <Text style={l.modalNotice}>{notice}</Text>}
-            {sheet === "panorama" ? (
-              <ExpoPanorama
-                onSave={async (result) => {
-                  await editRoom((r) => {
-                    r.evidence.push({
-                      ...result,
-                      id: uid(),
-                      kind: "panorama",
-                      caption: "Room panorama",
-                    });
-                  });
-                  setSheet(null);
-                  setNotice("Panorama saved to this room.");
-                }}
-                onCancel={() => setSheet(null)}
-              />
-            ) : sheet === "walkthrough" ? (
-              <LevelWalkthrough
-                onSave={saveWalkthrough}
-                onCancel={() => setSheet(null)}
-                analysisProgress={analysisProgress}
-              />
-            ) : sheet === "viewer" && evidence ? (
-              <PanoramaViewer path={evidence.path} />
-            ) : sheet === "photo" ? (
-              <View style={{ flex: 1, gap: 12, padding: 18 }}>
-                <View
-                  style={{
-                    flex: 1,
-                    borderRadius: 20,
-                    overflow: "hidden",
-                    backgroundColor: "#111",
-                  }}
-                >
-                  <CameraView
-                    ref={camera}
-                    facing="back"
-                    style={{ flex: 1 }}
-                    onCameraReady={() => setCameraReady(true)}
-                    onMountError={(e) => setNotice(e.message)}
-                  />
-                </View>
-                <Field
-                  label="Caption"
-                  value={detail}
-                  onChangeText={setDetail}
-                  placeholder="What does this photo show?"
-                />
-                <Button
-                  title={busy ? "Saving photo…" : "Take photo"}
-                  icon="camera"
-                  disabled={!cameraReady || !!busy}
-                  onPress={() => work("Saving photo…", takePhoto)}
-                />
-              </View>
-            ) : (
-              <ScrollView
-                keyboardShouldPersistTaps="handled"
-                contentContainerStyle={s.content}
-              >
-                {sheet === "property" && (
-                  <>
-                    <Field
-                      label="Property address"
-                      value={name}
-                      onChangeText={setName}
-                      placeholder="e.g. 24 Brunswick Street"
-                    />
-                    <Field
-                      label="Suburb / postcode"
-                      value={detail}
-                      onChangeText={setDetail}
-                      placeholder="e.g. Fitzroy VIC 3065"
-                    />
-                    <Text style={s.body}>
-                      An ingoing inspection will be created with four starter
-                      rooms.
-                    </Text>
-                    <Button
-                      title="Create property"
-                      disabled={!!busy || !name.trim()}
-                      onPress={() => work("Creating property…", createProperty)}
-                    />
-                  </>
-                )}
-                {sheet === "inspection" && (
-                  <>
-                    <Text style={s.body}>{property?.address}</Text>
-                    {(["ingoing", "outgoing"] as const).map((k) => (
-                      <Button
-                        key={k}
-                        secondary={kind !== k}
-                        title={
-                          k === "ingoing"
-                            ? "Ingoing inspection"
-                            : "Outgoing inspection"
-                        }
-                        onPress={() => setKind(k)}
-                      />
-                    ))}
-                    <Text style={s.body}>
-                      {kind === "outgoing"
-                        ? "The AI will use the latest finalized ingoing inspection as a reference, then flag only clearly visible differences for your review."
-                        : "Record one walkthrough and let the AI create a reviewable condition draft."}
-                    </Text>
-                    <Button
-                      title="Start inspection"
-                      disabled={!!busy}
-                      onPress={() =>
-                        work("Creating inspection…", createInspection)
-                      }
-                    />
-                  </>
-                )}
-                {(sheet === "room" || sheet === "rename") && (
-                  <>
-                    <Field
-                      label="Room name"
-                      value={name}
-                      onChangeText={setName}
-                      placeholder="e.g. Bedroom 2"
-                    />
-                    <Button
-                      title="Save room"
-                      disabled={!!busy || !name.trim()}
-                      onPress={() =>
-                        work("Saving room…", async () => {
-                          if (sheet === "rename")
-                            await editRoom((r) => {
-                              r.name = name.trim();
-                            });
-                          else
-                            await editInspection((i) => {
-                              i.rooms.push(newRoom(name.trim()));
-                            });
-                          setSheet(null);
-                        })
-                      }
-                    />
-                  </>
-                )}
-                {sheet === "item" && (
-                  <>
-                    <Text style={s.body}>
-                      {itemId && room?.items.find((item) => item.id === itemId)?.aiSuggestion
-                        ? `AI suggestion from ${room.items.find((item) => item.id === itemId)?.aiSuggestion?.timestamp} · ${room.items.find((item) => item.id === itemId)?.aiSuggestion?.confidence} confidence. Confirm or correct it from the walkthrough before saving.`
-                        : "Record the condition you can observe."}
-                    </Text>
-                    <View style={{ gap: 9 }}>
-                      {(
-                        [
-                          "good",
-                          "fair",
-                          "attention",
-                          "na",
-                          "unreviewed",
-                        ] as Condition[]
-                      ).map((c) => (
-                        <Button
-                          key={c}
-                          title={CONDITION_LABEL[c]}
-                          secondary={condition !== c}
-                          onPress={() => setCondition(c)}
-                        />
-                      ))}
-                    </View>
-                    <Field
-                      label="Notes"
-                      value={detail}
-                      onChangeText={setDetail}
-                      multiline
-                      placeholder="Describe location, condition and any follow-up."
-                    />
-                    <Button
-                      title="Save condition"
-                      disabled={!!busy}
-                      onPress={() =>
-                        work("Saving condition…", async () => {
-                          await editRoom((r) => {
-                            const i = r.items.find((i) => i.id === itemId)!;
-                            i.condition = condition;
-                            i.note = detail.trim();
-                            if (i.aiSuggestion) i.aiSuggestion.reviewed = true;
-                          });
-                          setSheet(null);
-                        })
-                      }
-                    />
-                  </>
-                )}
-                {sheet === "signature" && (
-                  <>
-                    <Field
-                      label="Full name"
-                      value={name}
-                      onChangeText={setName}
-                    />
-                    <View style={s.row}>
-                      {(["Inspector", "Tenant"] as const).map((r) => (
-                        <View key={r} style={{ flex: 1 }}>
-                          <Button
-                            title={r}
-                            secondary={role !== r}
-                            onPress={() => setRole(r)}
-                          />
-                        </View>
-                      ))}
-                    </View>
-                    <SignaturePad onChange={setSignature} />
-                    <Text style={s.body}>
-                      I confirm that I have reviewed this inspection record.
-                      This signature records my review and does not assign
-                      liability.
-                    </Text>
-                    <Button
-                      title="Save signature"
-                      disabled={!!busy || !signature.length || !name.trim()}
-                      onPress={() => work("Saving signature…", addSignature)}
-                    />
-                  </>
-                )}
-                {sheet === "originals" &&
-                  originals.map((path, i) => (
-                    <View key={path} style={{ gap: 8 }}>
-                      <Text style={s.label}>View {i + 1}</Text>
-                      <Image
-                        source={{ uri: fileURI(path) }}
-                        resizeMode="contain"
-                        style={{ width: "100%", height: 380 }}
-                      />
-                    </View>
-                  ))}
-                {sheet === "evidence" && evidence && (
-                  <>
-                    <Image
-                      source={{ uri: fileURI(evidence.path) }}
-                      resizeMode="contain"
-                      style={{
-                        width: "100%",
-                        height: 280,
-                        backgroundColor: "#e7ece2",
-                        borderRadius: 15,
-                      }}
-                    />
-                    <Text style={s.body}>
-                      {new Date(evidence.capturedAt).toLocaleString()}
-                    </Text>
-                    {evidence.kind === "panorama" && (
-                      <>
-                        <Tag
-                          text={`Coverage ${((evidence.coverage ?? 0) * 100).toFixed(1)}%`}
-                          amber={(evidence.coverage ?? 0) < 0.99}
-                        />
-                        <Text style={s.body}>
-                          Review seams and uncaptured black regions. Close-up
-                          photos are best for assessing small marks.
-                        </Text>
-                        {evidence.qualityFlags?.map((flag) => (
-                          <Text key={flag} style={s.body}>
-                            {flag}
-                          </Text>
-                        ))}
-                        <Button
-                          title="Share panorama JPEG"
-                          onPress={() =>
-                            work("Sharing panorama…", async () => {
-                              await Sharing.shareAsync(fileURI(evidence.path), {
-                                mimeType: "image/jpeg",
-                                UTI: "public.jpeg",
-                              });
-                            })
-                          }
-                        />
-                        {evidence.sourceDirectory?.startsWith(
-                          "captures/expo-",
-                        ) && (
-                          <Button
-                            title="Review original photos"
-                            secondary
-                            onPress={() =>
-                              work("Opening originals…", async () => {
-                                const manifest = JSON.parse(
-                                  await new File(
-                                    fileURI(
-                                      evidence.sourceDirectory +
-                                        "/manifest.json",
-                                    ),
-                                  ).text(),
-                                );
-                                setOriginals(
-                                  manifest.frames.map(
-                                    (f: { path: string }) => f.path,
-                                  ),
-                                );
-                                setSheet("originals");
-                              })
-                            }
-                          />
-                        )}
-
-                        <Button
-                          title="Explore 360° view"
-                          icon="globe"
-                          onPress={() =>
-                            work("Opening viewer…", async () => {
-                              if (captureModule)
-                                await captureModule.viewPanorama(evidence.path);
-                              else setSheet("viewer");
-                            })
-                          }
-                        />
-                      </>
-                    )}
-                    {room &&
-                    !locked &&
-                    room.evidence.some((e) => e.id === evidence.id) ? (
-                      <>
-                        <Field
-                          label="Caption"
-                          value={detail}
-                          onChangeText={setDetail}
-                          multiline
-                        />
-                        <Button
-                          title="Save caption"
-                          disabled={!!busy}
-                          onPress={() =>
-                            work("Saving caption…", async () => {
-                              await editRoom((r) => {
-                                r.evidence.find(
-                                  (e) => e.id === evidence.id,
-                                )!.caption = detail.trim();
-                              });
-                              setSheet(null);
-                            })
-                          }
-                        />
-                      </>
-                    ) : (
-                      <Text style={s.body}>{evidence.caption}</Text>
-                    )}
-                  </>
-                )}
-              </ScrollView>
-            )}
-          </KeyboardAvoidingView>
-        </SafeAreaView>
-      </Modal>
+      {screen === "home" && <Home startScan={startScan} saving={saving} />}
+      {screen === "processing" && <Processing phase={phase} progress={uploadProgress} />}
+      {screen === "ready" && inspection && <AnalysisReady inspection={inspection} viewReport={() => setScreen("report")} returnHome={returnHome} retry={() => setScreen("capture")} />}
+      {screen === "history" && <History reports={db.properties} onBack={returnHome} onOpen={openReport} />}
+      {screen === "report" && property && inspection && <Report property={property} inspection={inspection} onRoom={openRoom} onDetails={openDetails} onHome={returnHome} onShare={() => void shareReport()} onDownload={() => void savePDF()} />}
+      {screen === "room" && property && inspection && room && <RoomReport room={room} onBack={() => setScreen("report")} onItem={openItem} onPhoto={() => setScreen("photo")} />}
+      {screen === "photo" && room && <DetailCapture onSave={addCloseUp} onBack={() => setScreen("room")} />}
+      {screen === "item" && room && item && <EditItem itemName={item.name} suggestion={item.aiSuggestion} evidence={item.aiSuggestion?.evidenceId ? room.evidence.find((candidate) => candidate.id === item.aiSuggestion?.evidenceId) : undefined} note={itemNote} condition={itemCondition} onNote={setItemNote} onCondition={setItemCondition} onSave={() => void saveItem()} onBack={() => setScreen("room")} />}
+      {screen === "details" && <Details address={address} suburb={suburb} kind={inspectionKind} onAddress={setAddress} onSuburb={setSuburb} onKind={setInspectionKind} onSave={() => void saveDetails()} onBack={() => setScreen("report")} />}
     </SafeAreaView>
   );
 }
-function Stat({ value, label }: { value: string; label: string }) {
+
+function Brand() {
   return (
-    <View style={{ flex: 1, gap: 6 }}>
-      <Text style={{ fontSize: 26, fontWeight: "500", color: C.ink }}>
-        {value}
-      </Text>
-      <Text style={{ fontSize: 11, color: C.muted }}>{label}</Text>
+    <View style={styles.brandRow}>
+      <View style={styles.brandMark}><Icon name="scan" color="#173e33" size={19} /></View>
+      <Text style={styles.brand}>roomrecord<Text style={{ color: "#75a369" }}>.</Text></Text>
     </View>
   );
 }
-function Task({
-  icon,
-  title,
-  body,
-  onPress,
-}: {
-  icon: string;
-  title: string;
-  body: string;
-  onPress: () => void;
-}) {
+
+function Home({ startScan, saving }: { startScan: () => Promise<void>; saving: boolean }) {
   return (
-    <Pressable accessibilityRole="button" onPress={onPress}>
-      <Card>
-        <View style={s.row}>
-          <View style={l.propertyIcon}>
-            <Icon name={icon} />
-          </View>
-          <View style={{ flex: 1, gap: 3 }}>
-            <Text style={s.label}>{title}</Text>
-            <Text style={[s.body, { fontSize: 12 }]}>{body}</Text>
-          </View>
-          <Icon name="chevron" size={16} />
-        </View>
-      </Card>
-    </Pressable>
+    <View style={styles.home}>
+      <Brand />
+      <View style={styles.homeHero}>
+        <View style={styles.heroCircleOne} /><View style={styles.heroCircleTwo} />
+        <Text style={styles.kicker}>INSPECTION CAPTURE, SIMPLIFIED</Text>
+        <Text style={styles.heroTitle}>Get scanning for your next inspection report.</Text>
+        <Text style={styles.heroBody}>One steady walkthrough becomes an editable room-by-room report, with video evidence where it matters.</Text>
+      </View>
+      <Pressable accessibilityRole="button" accessibilityLabel="Start scanning" disabled={saving} onPress={() => void startScan()} style={({ pressed }) => [styles.startButton, saving && { opacity: 0.55 }, pressed && { transform: [{ scale: 0.98 }] }]}>
+        <View style={styles.startIcon}><Icon name="camera" color="#173e33" size={21} /></View>
+        <Text style={styles.startText}>Start scanning</Text>
+        <Icon name="arrow" color="#173e33" size={20} />
+      </Pressable>
+      <Text style={styles.homeNote}>Your camera opens next. No setup, measurements or room-by-room capture required.</Text>
+      <View style={styles.privacyHome}><Icon name="shield" color="#7a897f" size={17} /><Text style={styles.privacyText}>The video is kept on your phone. A temporary analysis copy is deleted after your draft is created.</Text></View>
+    </View>
   );
 }
-const l = StyleSheet.create({
-  header: {
-    minHeight: 65,
-    paddingHorizontal: 22,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    borderBottomWidth: 1,
-    borderColor: C.line,
-  },
-  wordmark: {
-    fontSize: 21,
-    fontWeight: "600",
-    color: C.ink,
-    letterSpacing: -0.8,
-  },
-  logo: {
-    width: 32,
-    height: 32,
-    borderRadius: 10,
-    backgroundColor: C.green,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  dot: { height: 5, width: 5, borderRadius: 5 },
-  iconButton: { padding: 8 },
-  closeButton: {
-    minHeight: 46,
-    minWidth: 76,
-    paddingHorizontal: 10,
-    borderRadius: 12,
-    backgroundColor: "#edf2e6",
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 4,
-  },
-  closeText: { fontSize: 12, fontWeight: "700", color: C.ink },
-  notice: {
-    flexDirection: "row",
-    gap: 10,
-    padding: 14,
-    backgroundColor: "#e6efd9",
-    alignItems: "center",
-  },
-  modalNotice: {
-    padding: 15,
-    backgroundColor: "#f8e8d5",
-    color: C.ink,
-    fontSize: 13,
-  },
-  busy: {
-    padding: 9,
-    gap: 9,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "#eaf1e4",
-  },
-  hero: {
-    backgroundColor: C.ink,
-    padding: 22,
-    borderRadius: 21,
-    flexDirection: "row",
-    minHeight: 220,
-    overflow: "hidden",
-  },
-  heroBadge: {
-    borderColor: "#4b6e5d",
-    borderWidth: 1,
-    paddingHorizontal: 8,
-    paddingVertical: 5,
-    borderRadius: 5,
-    alignSelf: "flex-start",
-  },
-  heroIllustration: {
-    justifyContent: "center",
-    alignItems: "center",
-    width: 94,
-    transform: [{ rotate: "-12deg" }],
-  },
-  scanBadge: {
-    position: "absolute",
-    bottom: 16,
-    right: -5,
-    backgroundColor: C.lime,
-    padding: 11,
-    borderRadius: 15,
-  },
-  stats: { flexDirection: "row", paddingVertical: 10, gap: 10 },
-  propertyIcon: {
-    width: 43,
-    height: 43,
-    backgroundColor: "#eef2e8",
-    borderRadius: 12,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  roomNumber: {
-    width: 42,
-    height: 42,
-    backgroundColor: "#edf3e6",
-    borderRadius: 50,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  progressIcon: {
-    backgroundColor: "#dde8ce",
-    width: 72,
-    height: 72,
-    borderRadius: 36,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  track: { height: 5, backgroundColor: "#d4dfc9", borderRadius: 6 },
-  fill: { backgroundColor: C.green, height: 5, borderRadius: 6 },
-  nav: {
-    flexDirection: "row",
-    paddingTop: 12,
-    paddingBottom: 7,
-    borderTopWidth: 1,
-    borderColor: C.line,
-    backgroundColor: C.white,
-  },
-  navItem: { flex: 1, alignItems: "center", gap: 5, minHeight: 43 },
-  captureTile: {
-    flex: 1,
-    backgroundColor: "#edf2e6",
-    padding: 17,
-    gap: 10,
-    borderRadius: 17,
-    minHeight: 132,
-  },
-  small: { color: C.muted, fontSize: 11, lineHeight: 16 },
+
+function Processing({ phase, progress }: { phase: AnalysisPhase; progress: number }) {
+  const steps: AnalysisPhase[] = ["Uploading your walkthrough", "Reviewing the rooms", "Finding condition evidence", "Preparing your report"];
+  const active = steps.indexOf(phase);
+  return (
+    <View style={styles.processingPage}>
+      <Brand />
+      <View style={styles.processingGlyph}><View style={styles.pulseOne} /><View style={styles.pulseTwo} /><Icon name="scan" color="#173e33" size={38} /></View>
+      <Text style={styles.processingTitle}>Your walkthrough is being analysed.</Text>
+      <Text style={styles.processingBody}>Keep RoomRecord open while we organise your room evidence and draft the report.</Text>
+      <View style={styles.stepStack}>
+        {steps.map((step, index) => (
+          <View key={step} style={styles.stepRow}>
+            <View style={[styles.stepDot, index < active && styles.stepDone, index === active && styles.stepCurrent]}>{index < active ? <Icon name="check" color="#173e33" size={13} /> : index === active ? <ActivityIndicator size="small" color="#173e33" /> : null}</View>
+            <View style={{ flex: 1 }}><Text style={[styles.stepText, index <= active && styles.stepTextActive]}>{step}</Text>{index === 0 && phase === "Uploading your walkthrough" && <View style={styles.uploadTrack}><View style={[styles.uploadFill, { width: `${Math.max(4, progress * 100)}%` }]} /></View>}</View>
+          </View>
+        ))}
+      </View>
+      <Text style={styles.processingFoot}>Your report stays a draft until you review and edit it.</Text>
+    </View>
+  );
+}
+
+function AnalysisReady({ inspection, viewReport, returnHome, retry }: { inspection: Inspection; viewReport: () => void; returnHome: () => void; retry: () => void }) {
+  const warnings = inspection.analysis?.coverageWarnings ?? ["The recording did not complete. You can try scanning again."];
+  const reviewCount = inspection.rooms.flatMap((room) => room.items).filter((item) => item.aiSuggestion && !item.aiSuggestion.reviewed).length;
+  const failed = inspection.walkthroughs?.[0]?.status === "failed";
+  return (
+    <ScrollView contentContainerStyle={styles.readyPage}>
+      <Brand />
+      <View style={styles.successMark}><Icon name={failed ? "warning" : "check"} color="#173e33" size={38} /></View>
+      <Text style={styles.readyTitle}>{failed ? "Your recording needs another try." : "Your recording has been analysed."}</Text>
+      <Text style={styles.readyBody}>{failed ? inspection.walkthroughs?.[0]?.error || "The analysis did not complete." : `We found ${inspection.rooms.length} ${inspection.rooms.length === 1 ? "room" : "rooms"} and ${reviewCount} condition items to review.`}</Text>
+      {!failed && <View style={styles.readySummary}><SummaryCell value={`${inspection.rooms.length}`} label="ROOMS FOUND" /><View style={styles.summaryDivider} /><SummaryCell value={`${reviewCount}`} label="ITEMS TO REVIEW" /><View style={styles.summaryDivider} /><SummaryCell value={inspection.analysis?.confidence?.toUpperCase() || "LOW"} label="AI CONFIDENCE" /></View>}
+      <View style={styles.warningBox}><Icon name="warning" color="#9c681a" size={19} /><View style={{ flex: 1, gap: 5 }}><Text style={styles.warningTitle}>Review before sharing</Text>{warnings.slice(0, 3).map((warning) => <Text key={warning} style={styles.warningText}>• {warning}</Text>)}</View></View>
+      <Pressable style={styles.startButton} onPress={failed ? retry : viewReport}><View style={styles.startIcon}><Icon name={failed ? "camera" : "report"} color="#173e33" size={20} /></View><Text style={styles.startText}>{failed ? "Try scanning again" : "View your report"}</Text><Icon name="arrow" color="#173e33" size={20} /></Pressable>
+      <Pressable onPress={returnHome} style={styles.textAction}><Text style={styles.textActionText}>Return home</Text></Pressable>
+    </ScrollView>
+  );
+}
+
+function Header({ label, title, onBack, right }: { label: string; title: string; onBack?: () => void; right?: React.ReactNode }) {
+  return <View style={styles.pageHeader}><View style={{ gap: 5, flex: 1 }}>{onBack ? <Pressable accessibilityRole="button" onPress={onBack} style={styles.backLine}><Icon name="back" color="#23684d" size={18} /><Text style={styles.backText}>Back</Text></Pressable> : <Brand />}<Text style={styles.pageLabel}>{label}</Text><Text style={styles.pageTitle}>{title}</Text></View>{right}</View>;
+}
+
+function Report({ property, inspection, onRoom, onDetails, onHome, onShare, onDownload }: { property: Property; inspection: Inspection; onRoom: (room: Room) => void; onDetails: () => void; onHome: () => void; onShare: () => void; onDownload: () => void }) {
+  const reviewItems = inspection.rooms.flatMap((room) => room.items).filter((item) => item.aiSuggestion && !item.aiSuggestion.reviewed).length;
+  const captured = inspection.walkthroughs?.[0];
+  return (
+    <View style={{ flex: 1 }}>
+      <ScrollView contentContainerStyle={styles.reportPage}>
+        <Header label={`${inspection.kind.toUpperCase()} INSPECTION · DRAFT`} title={property.address === "New inspection" ? "Untitled property" : property.address} right={<Pressable accessibilityLabel="Edit property details" onPress={onDetails} style={styles.editCircle}><Icon name="edit" color="#173e33" size={19} /></Pressable>} />
+        <Pressable onPress={onDetails} style={styles.detailsPrompt}><View style={styles.detailsIcon}><Icon name="home" color="#23684d" size={20} /></View><View style={{ flex: 1, gap: 2 }}><Text style={styles.detailsTitle}>{property.address === "New inspection" ? "Add property details" : property.suburb || "Add suburb or postcode"}</Text><Text style={styles.detailsSubtitle}>Address, report type and report date</Text></View><Icon name="chevron" color="#23684d" size={18} /></Pressable>
+        <View style={styles.reportIntro}><Text style={styles.reportIntroTitle}>{reviewItems ? `${reviewItems} suggestions need your review` : "All suggestions have been reviewed"}</Text><Text style={styles.reportIntroBody}>{inspection.analysis?.summary || "Your original walkthrough is retained on this device as evidence."}</Text><View style={styles.coverageMeta}><Icon name="clock" color="#5f756a" size={16} /><Text style={styles.coverageMetaText}>{captured ? `${Math.ceil(captured.durationSeconds / 60)} min walkthrough · ${Math.round((captured.coverage ?? 0) * 100)}% guided coverage` : "Walkthrough evidence"}</Text></View></View>
+        <Text style={styles.sectionCaption}>ROOM-BY-ROOM REPORT</Text>
+        <View style={styles.roomList}>{inspection.rooms.map((candidate, index) => <RoomCard key={candidate.id} room={candidate} number={index + 1} onPress={() => onRoom(candidate)} />)}</View>
+        <View style={styles.aiNote}><Icon name="shield" color="#607066" size={18} /><Text style={styles.aiNoteText}>AI suggestions are linked to video evidence and stay editable. Review every item before relying on this report.</Text></View>
+      </ScrollView>
+      <ReportActions onHome={onHome} onShare={onShare} onDownload={onDownload} />
+    </View>
+  );
+}
+
+function RoomCard({ room, number, onPress }: { room: Room; number: number; onPress: () => void }) {
+  const toReview = room.items.filter((item) => item.aiSuggestion && !item.aiSuggestion.reviewed).length;
+  const needsAttention = room.items.filter((item) => item.condition === "attention").length;
+  const still = room.evidence.find((evidence) => evidence.source === "walkthrough") || room.evidence[0];
+  return <Pressable accessibilityRole="button" onPress={onPress} style={({ pressed }) => [styles.roomCard, pressed && { opacity: 0.74 }]}><View style={styles.roomNumber}><Text style={styles.roomNumberText}>{String(number).padStart(2, "0")}</Text></View><View style={{ flex: 1, gap: 7 }}><View style={styles.roomTop}><Text style={styles.roomName}>{room.name}</Text><Icon name="chevron" color="#23684d" size={18} /></View><Text style={styles.roomMeta}>{toReview ? `${toReview} items to review` : "Reviewed"}{needsAttention ? ` · ${needsAttention} needs attention` : ""}</Text><View style={styles.roomEvidenceRow}>{still ? <Image source={{ uri: fileURI(still.path) }} style={styles.roomThumb} /> : <View style={styles.roomThumbEmpty}><Icon name="camera" color="#7e8a83" size={18} /></View>}<Text style={styles.evidenceLabel}>{still ? `Walkthrough still${still.timestamp ? ` · ${still.timestamp}` : ""}` : "No still available"}</Text></View></View></Pressable>;
+}
+
+function RoomReport({ room, onBack, onItem, onPhoto }: { room: Room; onBack: () => void; onItem: (id: string) => void; onPhoto: () => void }) {
+  const stills = room.evidence.filter((evidence) => evidence.source === "walkthrough");
+  return <View style={{ flex: 1 }}><ScrollView contentContainerStyle={styles.roomPage}><Header label={`ROOM REPORT · ${room.confidence ? `${room.confidence.toUpperCase()} CONFIDENCE` : "REVIEW"}`} title={room.name} onBack={onBack} /><Text style={styles.roomEvidenceHeading}>VIDEO EVIDENCE</Text>{stills.length ? <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.stillStrip}>{stills.map((still) => <View key={still.id} style={styles.stillWrap}><Image source={{ uri: fileURI(still.path) }} style={styles.detailStill} /><Text style={styles.stillCaption}>{still.timestamp || "Walkthrough"}</Text></View>)}</ScrollView> : <View style={styles.emptyEvidence}><Icon name="camera" color="#7e8a83" size={22} /><Text style={styles.emptyEvidenceText}>No extracted video stills are available for this room.</Text></View>}<Text style={styles.roomContext}>{room.walkthroughEvidence || "Review the room evidence before confirming these suggestions."}</Text><Pressable style={styles.closeUpButton} onPress={onPhoto}><Icon name="camera" color="#23684d" size={18} /><Text style={styles.closeUpText}>Add a close-up</Text><Icon name="chevron" color="#23684d" size={17} /></Pressable><Text style={styles.sectionCaption}>CONDITION REPORT</Text><View style={styles.itemList}>{room.items.map((candidate) => <ConditionCard key={candidate.id} item={candidate} evidence={candidate.aiSuggestion?.evidenceId ? room.evidence.find((evidence) => evidence.id === candidate.aiSuggestion?.evidenceId) : undefined} onPress={() => onItem(candidate.id)} />)}</View></ScrollView></View>;
+}
+
+function ConditionCard({ item, evidence, onPress }: { item: Room["items"][number]; evidence?: Room["evidence"][number]; onPress: () => void }) {
+  const tone = conditionTone[item.condition];
+  return <Pressable accessibilityRole="button" onPress={onPress} style={({ pressed }) => [styles.conditionCard, pressed && { opacity: 0.74 }]}><View style={styles.conditionHead}><View style={{ flex: 1, gap: 4 }}><Text style={styles.conditionName}>{item.name}</Text>{item.aiSuggestion && <Text style={styles.suggestionMeta}>{item.aiSuggestion.reviewed ? "REVIEWED BY INSPECTOR" : `AI SUGGESTION · ${item.aiSuggestion.confidence.toUpperCase()} CONFIDENCE`}</Text>}</View><View style={[styles.conditionTag, { backgroundColor: tone.fill }]}><Text style={[styles.conditionTagText, { color: tone.text }]}>{CONDITION_LABEL[item.condition]}</Text></View></View>{!!item.note && <Text style={styles.conditionNote}>{item.note}</Text>}{(evidence || item.aiSuggestion) && <View style={styles.conditionEvidence}>{evidence ? <Image source={{ uri: fileURI(evidence.path) }} style={styles.conditionThumb} /> : <View style={styles.conditionThumbEmpty}><Icon name="camera" color="#758179" size={16} /></View>}<View style={{ flex: 1 }}><Text style={styles.evidenceRefTitle}>Evidence from walkthrough</Text><Text style={styles.evidenceRefTime}>{item.aiSuggestion?.timestamp || "Timestamp unavailable"}</Text></View><Icon name="chevron" color="#23684d" size={17} /></View>}</Pressable>;
+}
+
+function EditItem({ itemName, suggestion, evidence, note, condition, onNote, onCondition, onSave, onBack }: { itemName: string; suggestion?: { timestamp: string; confidence: string; reviewed: boolean }; evidence?: Room["evidence"][number]; note: string; condition: Condition; onNote: (value: string) => void; onCondition: (value: Condition) => void; onSave: () => void; onBack: () => void }) {
+  return <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}><ScrollView contentContainerStyle={styles.editPage} keyboardShouldPersistTaps="handled"><Header label="EDIT REPORT ITEM" title={itemName} onBack={onBack} />{suggestion && <View style={styles.sourceBox}><Icon name="clock" color="#23684d" size={18} /><Text style={styles.sourceText}>AI suggestion from the walkthrough at {suggestion.timestamp} · {suggestion.confidence} confidence. Saving confirms you have reviewed it.</Text></View>}{evidence && <View style={styles.editEvidence}><Image source={{ uri: fileURI(evidence.path) }} style={styles.editEvidenceImage} /><Text style={styles.editEvidenceCaption}>Video evidence · {evidence.timestamp || suggestion?.timestamp}</Text></View>}<Text style={styles.fieldLabel}>CONDITION</Text><View style={styles.conditionChoices}>{(["good", "fair", "attention", "unreviewed", "na"] as Condition[]).map((choice) => <Pressable key={choice} onPress={() => onCondition(choice)} style={[styles.choice, condition === choice && { borderColor: conditionTone[choice].text, backgroundColor: conditionTone[choice].fill }]}><Text style={[styles.choiceText, condition === choice && { color: conditionTone[choice].text }]}>{CONDITION_LABEL[choice]}</Text></Pressable>)}</View><Text style={styles.fieldLabel}>REPORT TEXT</Text><TextInput value={note} onChangeText={onNote} multiline placeholder="Describe what you can see, where it is, and what needs follow-up." placeholderTextColor="#89948e" style={styles.noteInput} /><Pressable style={styles.saveButton} onPress={onSave}><Icon name="check" color="#fff" size={19} /><Text style={styles.saveText}>Save report item</Text></Pressable></ScrollView></KeyboardAvoidingView>;
+}
+
+function Details({ address, suburb, kind, onAddress, onSuburb, onKind, onSave, onBack }: { address: string; suburb: string; kind: Inspection["kind"]; onAddress: (value: string) => void; onSuburb: (value: string) => void; onKind: (value: Inspection["kind"]) => void; onSave: () => void; onBack: () => void }) {
+  return <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}><ScrollView contentContainerStyle={styles.detailsPage} keyboardShouldPersistTaps="handled"><Header label="REPORT DETAILS" title="Property details" onBack={onBack} /><Text style={styles.fieldLabel}>PROPERTY ADDRESS</Text><TextInput value={address} onChangeText={onAddress} placeholder="e.g. 24 Brunswick Street" placeholderTextColor="#89948e" style={styles.textInput} /><Text style={styles.fieldLabel}>SUBURB OR POSTCODE</Text><TextInput value={suburb} onChangeText={onSuburb} placeholder="e.g. Fitzroy VIC 3065" placeholderTextColor="#89948e" style={styles.textInput} /><Text style={styles.fieldLabel}>INSPECTION TYPE</Text><View style={styles.kindRow}>{(["ingoing", "outgoing"] as const).map((option) => <Pressable key={option} onPress={() => onKind(option)} style={[styles.kindOption, kind === option && styles.kindOptionActive]}><Text style={[styles.kindOptionText, kind === option && styles.kindOptionTextActive]}>{option === "ingoing" ? "Ingoing" : "Outgoing"}</Text></Pressable>)}</View>{kind === "outgoing" && <View style={styles.outgoingHint}><Icon name="compare" color="#9c681a" size={18} /><Text style={styles.outgoingHintText}>This report is an editable outgoing condition draft. Check each observation against your own ingoing record before relying on a change.</Text></View>}<Pressable style={styles.saveButton} onPress={onSave}><Icon name="check" color="#fff" size={19} /><Text style={styles.saveText}>Save report details</Text></Pressable></ScrollView></KeyboardAvoidingView>;
+}
+
+function History({ reports, onBack, onOpen }: { reports: Property[]; onBack: () => void; onOpen: (property: Property, inspection: Inspection) => void }) {
+  const entries = reports.flatMap((property) => property.inspections.map((inspection) => ({ property, inspection }))).sort((a, b) => b.inspection.createdAt.localeCompare(a.inspection.createdAt));
+  return <ScrollView contentContainerStyle={styles.historyPage}><Header label="YOUR REPORTS" title="Previous reports" onBack={onBack} />{entries.length ? entries.map(({ property, inspection }) => <Pressable key={inspection.id} onPress={() => onOpen(property, inspection)} style={styles.historyCard}><View style={styles.historyCardIcon}><Icon name="report" color="#23684d" size={21} /></View><View style={{ flex: 1, gap: 4 }}><Text style={styles.historyTitle}>{property.address || "Untitled property"}</Text><Text style={styles.historyMeta}>{inspection.kind === "ingoing" ? "Ingoing" : "Outgoing"} · {new Date(inspection.createdAt).toLocaleDateString()}</Text></View><Icon name="chevron" color="#23684d" size={18} /></Pressable>) : <Text style={styles.emptyHistory}>Your completed reports will appear here.</Text>}</ScrollView>;
+}
+
+function ReportActions({ onHome, onShare, onDownload }: { onHome: () => void; onShare: () => void; onDownload: () => void }) {
+  return <View style={styles.reportActions}><Pressable accessibilityRole="button" onPress={onHome} style={styles.actionButton}><Icon name="home" color="#23684d" size={20} /><Text style={styles.actionText}>Home</Text></Pressable><Pressable accessibilityRole="button" onPress={onShare} style={styles.actionButton}><Icon name="arrow" color="#23684d" size={20} /><Text style={styles.actionText}>Share</Text></Pressable><Pressable accessibilityRole="button" onPress={onDownload} style={styles.actionButton}><Icon name="report" color="#23684d" size={20} /><Text style={styles.actionText}>Save PDF</Text></Pressable></View>;
+}
+
+function SummaryCell({ value, label }: { value: string; label: string }) { return <View style={{ flex: 1, gap: 5 }}><Text style={styles.summaryValue}>{value}</Text><Text style={styles.summaryLabel}>{label}</Text></View>; }
+
+const styles = StyleSheet.create({
+  app: { flex: 1, backgroundColor: "#f5f6f1" },
+  captureSafe: { flex: 1, backgroundColor: "#0c211b" },
+  loading: { flex: 1, backgroundColor: "#f5f6f1", alignItems: "center", justifyContent: "center" },
+  notice: { marginHorizontal: 16, marginTop: 8, padding: 12, gap: 9, flexDirection: "row", alignItems: "center", backgroundColor: "#fff5dc", borderColor: "#f0dca5", borderWidth: 1, borderRadius: 14 },
+  noticeText: { flex: 1, color: "#675126", fontSize: 12.5, lineHeight: 18 },
+  home: { flex: 1, paddingHorizontal: 24, paddingTop: 21, paddingBottom: 26, justifyContent: "space-between" },
+  brandRow: { flexDirection: "row", alignItems: "center", gap: 9 },
+  brandMark: { width: 32, height: 32, borderRadius: 10, backgroundColor: "#d8f5ad", alignItems: "center", justifyContent: "center" },
+  brand: { color: "#173e33", fontSize: 18, fontWeight: "800", letterSpacing: -0.7 },
+  homeHero: { paddingVertical: 44, gap: 15, overflow: "hidden" },
+  heroCircleOne: { position: "absolute", width: 220, height: 220, borderRadius: 110, borderWidth: 1, borderColor: "#dbe6d4", right: -110, top: 14 },
+  heroCircleTwo: { position: "absolute", width: 130, height: 130, borderRadius: 65, backgroundColor: "#e5efdc", right: -36, top: 58 },
+  kicker: { color: "#62736a", fontSize: 10, fontWeight: "800", letterSpacing: 1.6 },
+  heroTitle: { maxWidth: 340, color: "#173e33", fontSize: 37, fontWeight: "700", letterSpacing: -1.55, lineHeight: 43 },
+  heroBody: { maxWidth: 315, color: "#617168", fontSize: 15, lineHeight: 22 },
+  startButton: { minHeight: 62, borderRadius: 19, backgroundColor: "#d8f5ad", paddingHorizontal: 12, paddingVertical: 8, flexDirection: "row", alignItems: "center", gap: 12 },
+  startIcon: { width: 42, height: 42, borderRadius: 14, backgroundColor: "#ecfbd9", justifyContent: "center", alignItems: "center" },
+  startText: { flex: 1, color: "#173e33", fontSize: 16, fontWeight: "800" },
+  homeNote: { textAlign: "center", color: "#758279", fontSize: 12, lineHeight: 18, paddingHorizontal: 18, marginTop: 12 },
+  historyLink: { minHeight: 50, flexDirection: "row", justifyContent: "center", alignItems: "center", gap: 4 },
+  historyLinkText: { color: "#23684d", fontWeight: "700", fontSize: 13 },
+  privacyHome: { flexDirection: "row", gap: 10, paddingTop: 10, borderTopWidth: 1, borderTopColor: "#e0e7dd", alignItems: "flex-start" },
+  privacyText: { flex: 1, color: "#7a877f", fontSize: 11, lineHeight: 16 },
+  processingPage: { flex: 1, paddingHorizontal: 25, paddingTop: 21, justifyContent: "center", gap: 19 },
+  processingGlyph: { height: 132, width: 132, borderRadius: 66, backgroundColor: "#e3f5ce", alignSelf: "center", justifyContent: "center", alignItems: "center", marginBottom: 6 },
+  pulseOne: { position: "absolute", height: 108, width: 108, borderRadius: 54, borderWidth: 1, borderColor: "#b4d796" },
+  pulseTwo: { position: "absolute", height: 150, width: 150, borderRadius: 75, borderWidth: 1, borderColor: "#d7e8c8" },
+  processingTitle: { color: "#173e33", fontSize: 31, lineHeight: 37, letterSpacing: -1.15, fontWeight: "700", textAlign: "center" },
+  processingBody: { color: "#64756c", fontSize: 14, lineHeight: 21, textAlign: "center", paddingHorizontal: 14 },
+  stepStack: { marginTop: 8, backgroundColor: "#fff", padding: 18, borderColor: "#e0e6de", borderWidth: 1, borderRadius: 20, gap: 16 },
+  stepRow: { flexDirection: "row", alignItems: "center", gap: 12 },
+  stepDot: { height: 24, width: 24, borderRadius: 12, alignItems: "center", justifyContent: "center", backgroundColor: "#edf0ec" },
+  stepDone: { backgroundColor: "#d8f5ad" },
+  stepCurrent: { backgroundColor: "#e3f5ce" },
+  stepText: { color: "#9aa59e", fontSize: 13, fontWeight: "600" },
+  stepTextActive: { color: "#234a3c" },
+  uploadTrack: { height: 4, marginTop: 7, backgroundColor: "#e2e8e1", overflow: "hidden", borderRadius: 5 },
+  uploadFill: { height: "100%", backgroundColor: "#77ad6c", borderRadius: 5 },
+  processingFoot: { color: "#7b887f", textAlign: "center", fontSize: 11, lineHeight: 16, marginTop: 5 },
+  readyPage: { padding: 25, gap: 18, minHeight: "100%", justifyContent: "center" },
+  successMark: { width: 76, height: 76, borderRadius: 25, backgroundColor: "#d8f5ad", alignSelf: "center", alignItems: "center", justifyContent: "center" },
+  readyTitle: { color: "#173e33", fontSize: 31, lineHeight: 37, letterSpacing: -1.1, fontWeight: "700", textAlign: "center" },
+  readyBody: { color: "#63736a", textAlign: "center", fontSize: 14, lineHeight: 21 },
+  readySummary: { flexDirection: "row", backgroundColor: "#e6f0de", borderRadius: 18, paddingVertical: 16, paddingHorizontal: 15 },
+  summaryDivider: { width: 1, backgroundColor: "#c8dbbf", marginHorizontal: 10 },
+  summaryValue: { color: "#173e33", fontSize: 18, fontWeight: "800" },
+  summaryLabel: { color: "#63736a", fontSize: 8.5, fontWeight: "800", letterSpacing: 0.65 },
+  warningBox: { flexDirection: "row", gap: 10, padding: 15, backgroundColor: "#fff5df", borderRadius: 16, borderColor: "#f1dfb5", borderWidth: 1 },
+  warningTitle: { color: "#735318", fontSize: 13, fontWeight: "800" },
+  warningText: { color: "#826631", fontSize: 12, lineHeight: 17 },
+  textAction: { minHeight: 44, alignItems: "center", justifyContent: "center" },
+  textActionText: { color: "#23684d", fontWeight: "700", fontSize: 14 },
+  reportPage: { padding: 22, paddingBottom: 105, gap: 19 },
+  pageHeader: { flexDirection: "row", alignItems: "flex-start", gap: 12 },
+  backLine: { alignSelf: "flex-start", flexDirection: "row", gap: 5, alignItems: "center", minHeight: 26 },
+  backText: { color: "#23684d", fontSize: 13, fontWeight: "700" },
+  pageLabel: { color: "#7e8b83", fontSize: 9.5, fontWeight: "800", letterSpacing: 1.3 },
+  pageTitle: { color: "#173e33", fontSize: 28, lineHeight: 33, letterSpacing: -1, fontWeight: "700" },
+  editCircle: { width: 42, height: 42, borderRadius: 14, alignItems: "center", justifyContent: "center", backgroundColor: "#e3f0d8" },
+  detailsPrompt: { flexDirection: "row", alignItems: "center", gap: 12, padding: 14, backgroundColor: "#fff", borderWidth: 1, borderColor: "#e0e6de", borderRadius: 16 },
+  detailsIcon: { width: 35, height: 35, borderRadius: 11, backgroundColor: "#e7f3dd", alignItems: "center", justifyContent: "center" },
+  detailsTitle: { color: "#214438", fontSize: 13, fontWeight: "800" },
+  detailsSubtitle: { color: "#718077", fontSize: 11.5 },
+  reportIntro: { backgroundColor: "#193d32", borderRadius: 21, padding: 19, gap: 10 },
+  reportIntroTitle: { color: "#d8f5ad", fontSize: 18, fontWeight: "700", letterSpacing: -0.4 },
+  reportIntroBody: { color: "#c2d5cb", fontSize: 13, lineHeight: 19 },
+  coverageMeta: { flexDirection: "row", gap: 7, alignItems: "center", marginTop: 3 },
+  coverageMetaText: { color: "#aec4b9", fontSize: 11.5 },
+  sectionCaption: { color: "#7b887f", fontSize: 10, fontWeight: "800", letterSpacing: 1.4 },
+  roomList: { gap: 10 },
+  roomCard: { padding: 14, borderRadius: 18, borderWidth: 1, borderColor: "#e0e6de", backgroundColor: "#fff", flexDirection: "row", gap: 12 },
+  roomNumber: { width: 30, height: 30, borderRadius: 10, backgroundColor: "#e7f3dd", alignItems: "center", justifyContent: "center" },
+  roomNumberText: { color: "#2f7450", fontSize: 11, fontWeight: "800" },
+  roomTop: { flexDirection: "row", gap: 8, justifyContent: "space-between", alignItems: "center" },
+  roomName: { flex: 1, color: "#173e33", fontWeight: "700", fontSize: 16, letterSpacing: -0.2 },
+  roomMeta: { color: "#6f7e75", fontSize: 12 },
+  roomEvidenceRow: { flexDirection: "row", gap: 8, alignItems: "center", marginTop: 3 },
+  roomThumb: { width: 38, height: 29, borderRadius: 6, backgroundColor: "#e7ece7" },
+  roomThumbEmpty: { width: 38, height: 29, borderRadius: 6, backgroundColor: "#edf0ed", alignItems: "center", justifyContent: "center" },
+  evidenceLabel: { color: "#77847c", fontSize: 10.5 },
+  aiNote: { flexDirection: "row", gap: 9, padding: 13, alignItems: "flex-start" },
+  aiNoteText: { flex: 1, color: "#718078", fontSize: 11, lineHeight: 16 },
+  reportActions: { position: "absolute", bottom: 0, left: 0, right: 0, minHeight: 78, paddingHorizontal: 13, paddingTop: 9, paddingBottom: 13, flexDirection: "row", borderTopWidth: 1, borderColor: "#dce4db", backgroundColor: "rgba(250,251,247,.97)" },
+  actionButton: { flex: 1, alignItems: "center", justifyContent: "center", gap: 4 },
+  actionText: { color: "#23684d", fontSize: 10.5, fontWeight: "700" },
+  roomPage: { padding: 22, gap: 16, paddingBottom: 36 },
+  roomEvidenceHeading: { color: "#7b887f", fontSize: 10, fontWeight: "800", letterSpacing: 1.3 },
+  stillStrip: { gap: 12 },
+  stillWrap: { width: 220, gap: 7 },
+  detailStill: { width: 220, height: 150, borderRadius: 14, backgroundColor: "#e8ece7" },
+  stillCaption: { color: "#6f7d75", fontSize: 11, fontWeight: "700" },
+  emptyEvidence: { padding: 15, borderRadius: 14, backgroundColor: "#edf1ec", flexDirection: "row", gap: 9, alignItems: "center" },
+  emptyEvidenceText: { flex: 1, color: "#708077", fontSize: 12, lineHeight: 17 },
+  roomContext: { color: "#66766d", fontSize: 12.5, lineHeight: 18 },
+  closeUpButton: { minHeight: 48, flexDirection: "row", gap: 10, alignItems: "center", paddingHorizontal: 14, borderWidth: 1, borderColor: "#d9e4d7", borderRadius: 14, backgroundColor: "#edf6e7" },
+  closeUpText: { flex: 1, color: "#23684d", fontSize: 13, fontWeight: "800" },
+  itemList: { gap: 10 },
+  conditionCard: { padding: 15, borderRadius: 17, borderColor: "#e0e6de", borderWidth: 1, backgroundColor: "#fff", gap: 11 },
+  conditionHead: { flexDirection: "row", gap: 8, alignItems: "flex-start" },
+  conditionName: { color: "#173e33", fontSize: 15, fontWeight: "700" },
+  suggestionMeta: { color: "#7c8a81", fontSize: 9, fontWeight: "800", letterSpacing: 0.8 },
+  conditionTag: { borderRadius: 7, paddingHorizontal: 8, paddingVertical: 5 },
+  conditionTagText: { fontWeight: "800", fontSize: 10.5 },
+  conditionNote: { color: "#5e6d64", fontSize: 13, lineHeight: 19 },
+  conditionEvidence: { borderTopColor: "#e8ece7", borderTopWidth: 1, paddingTop: 10, flexDirection: "row", gap: 9, alignItems: "center" },
+  conditionThumb: { width: 42, height: 33, borderRadius: 7, backgroundColor: "#e8ece7" },
+  conditionThumbEmpty: { width: 42, height: 33, borderRadius: 7, backgroundColor: "#edf0ed", alignItems: "center", justifyContent: "center" },
+  evidenceRefTitle: { color: "#426455", fontSize: 11.5, fontWeight: "700" },
+  evidenceRefTime: { color: "#7b887f", fontSize: 10.5, marginTop: 2 },
+  editPage: { padding: 22, gap: 16, paddingBottom: 40 },
+  sourceBox: { flexDirection: "row", gap: 10, padding: 14, borderRadius: 15, backgroundColor: "#e4f1dc" },
+  sourceText: { flex: 1, color: "#486452", fontSize: 12, lineHeight: 18 },
+  editEvidence: { gap: 7 },
+  editEvidenceImage: { width: "100%", height: 220, borderRadius: 16, backgroundColor: "#e8ece7" },
+  editEvidenceCaption: { color: "#718077", fontSize: 11.5, fontWeight: "700" },
+  fieldLabel: { color: "#748279", fontSize: 10, fontWeight: "800", letterSpacing: 1.2, marginTop: 5 },
+  conditionChoices: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  choice: { paddingHorizontal: 12, minHeight: 37, justifyContent: "center", borderRadius: 10, borderWidth: 1, borderColor: "#dce4db", backgroundColor: "#fff" },
+  choiceText: { color: "#53635a", fontSize: 12, fontWeight: "700" },
+  noteInput: { minHeight: 165, padding: 14, borderRadius: 15, borderWidth: 1, borderColor: "#dce4db", backgroundColor: "#fff", color: "#173e33", fontSize: 14, lineHeight: 21, textAlignVertical: "top" },
+  saveButton: { minHeight: 54, marginTop: 8, borderRadius: 15, backgroundColor: "#23684d", alignItems: "center", justifyContent: "center", flexDirection: "row", gap: 9 },
+  saveText: { color: "#fff", fontSize: 14, fontWeight: "800" },
+  detailsPage: { padding: 22, gap: 14, paddingBottom: 40 },
+  textInput: { minHeight: 51, paddingHorizontal: 14, borderRadius: 14, borderColor: "#dce4db", borderWidth: 1, backgroundColor: "#fff", color: "#173e33", fontSize: 14 },
+  kindRow: { flexDirection: "row", gap: 9 },
+  kindOption: { flex: 1, minHeight: 48, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: "#dce4db", borderRadius: 13, backgroundColor: "#fff" },
+  kindOptionActive: { borderColor: "#347454", backgroundColor: "#e4f3dc" },
+  kindOptionText: { color: "#64746a", fontWeight: "700", fontSize: 13 },
+  kindOptionTextActive: { color: "#216240" },
+  outgoingHint: { flexDirection: "row", gap: 9, padding: 13, borderRadius: 14, backgroundColor: "#fff5df" },
+  outgoingHintText: { flex: 1, color: "#816433", fontSize: 11.5, lineHeight: 17 },
+  historyPage: { padding: 22, gap: 12, paddingBottom: 38 },
+  historyCard: { flexDirection: "row", alignItems: "center", gap: 12, padding: 14, backgroundColor: "#fff", borderWidth: 1, borderColor: "#e0e6de", borderRadius: 16 },
+  historyCardIcon: { width: 38, height: 38, borderRadius: 12, backgroundColor: "#e7f3dd", alignItems: "center", justifyContent: "center" },
+  historyTitle: { color: "#173e33", fontSize: 14, fontWeight: "700" },
+  historyMeta: { color: "#718077", fontSize: 11.5 },
+  emptyHistory: { color: "#718077", textAlign: "center", marginTop: 40 },
 });
