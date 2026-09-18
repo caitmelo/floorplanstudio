@@ -1,0 +1,1 @@
+{"name":"floorplan-studio","version":"1.0.0","private":true,"type":"module","scripts":{"dev":"vite --config vite.config.mjs","build":"node scripts/build.mjs","test":"node --test tests/*.test.mjs"},"devDependencies":{"vite":"7.1.7"}}

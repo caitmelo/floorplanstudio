@@ -1,0 +1,10 @@
+import test from 'node:test';import assert from 'node:assert/strict';import worker from '../server/index.mjs';
+const origin='http://127.0.0.1:4173';
+const req=(path,method='GET',body,headers={})=>new Request(origin+path,{method,headers:{Origin:origin,...headers},...(body===undefined?{}:{body})});
+test('status exposes readiness but never a credential',async()=>{const r=await worker.fetch(req('/api/status'),{OPENAI_API_KEY:'not-for-output'});const s=await r.text();assert.equal(JSON.parse(s).aiReady,true);assert(!s.includes('not-for-output'));});
+test('unsupported API routes return 404',async()=>assert.equal((await worker.fetch(req('/api/nope'),{})).status,404));
+test('plan GET is rejected',async()=>assert.equal((await worker.fetch(req('/api/plan'),{})).status,405));
+test('cross-origin request is rejected before upstream work',async()=>assert.equal((await worker.fetch(req('/api/plan','POST','{}',{Origin:'https://unrelated.test'}),{OPENAI_API_KEY:'test'})).status,403));
+test('non-JSON body rejected',async()=>assert.equal((await worker.fetch(req('/api/plan','POST','text'),{OPENAI_API_KEY:'test'})).status,415));
+test('invalid dimensions rejected',async()=>assert.equal((await worker.fetch(req('/api/plan','POST',JSON.stringify({instruction:'test',width:0,height:800,labels:[],image:'data:image/png;base64,AAAA'}),{'Content-Type':'application/json'}),{OPENAI_API_KEY:'test'})).status,400));
+test('oversized payload rejected',async()=>assert.equal((await worker.fetch(req('/api/plan','POST',' '.repeat(7000001),{'Content-Type':'application/json'}),{OPENAI_API_KEY:'test'})).status,413));
